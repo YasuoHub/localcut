@@ -53,3 +53,15 @@ export interface CanvasViewState {
   offsetX: number
   offsetY: number
 }
+
+export interface ImageLayer {
+  id: string
+  name: string
+  image: HTMLImageElement
+  workingCanvas: HTMLCanvasElement | null
+  x: number
+  y: number
+  scaleX: number
+  scaleY: number
+  visible: boolean
+}

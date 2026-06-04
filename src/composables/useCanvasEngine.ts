@@ -1,5 +1,5 @@
 import { ref, reactive, watch, type Ref } from 'vue'
-import type { CropRegion, ShapeType, TextAnnotation, DragType, CanvasViewState } from '../types'
+import type { CropRegion, ShapeType, TextAnnotation, DragType, CanvasViewState, ImageLayer } from '../types'
 import { drawShapePath, addShapeToPath, nextRegionName } from './shapeUtils'
 import { magicWandSelect } from './magicWandUtils'
 
@@ -48,6 +48,8 @@ export function useCanvasEngine(
   constrainToImage: Ref<boolean>,
   magicWandTolerance: Ref<number>,
   showOriginal: Ref<boolean>,
+  layers: Ref<ImageLayer[]>,
+  activeLayerId: Ref<string | null>,
   snapshot?: () => void,
 ) {
   const view = reactive<CanvasViewState>({
@@ -57,9 +59,20 @@ export function useCanvasEngine(
     offsetY: 0,
   })
 
-  // working layer (copy of original image that brush/eraser modify)
-  let workingCanvas: HTMLCanvasElement | null = null
-  let workingCtx: CanvasRenderingContext2D | null = null
+  // helpers
+  function getActiveLayer(): ImageLayer | null {
+    return layers.value.find(l => l.id === activeLayerId.value) ?? null
+  }
+  function getWorkingCanvas(): HTMLCanvasElement | null {
+    return getActiveLayer()?.workingCanvas ?? null
+  }
+  function getWorkingCtx(): CanvasRenderingContext2D | null {
+    const wc = getWorkingCanvas()
+    return wc ? wc.getContext('2d') : null
+  }
+  function getActiveImage(): HTMLImageElement | null {
+    return getActiveLayer()?.image ?? null
+  }
 
   // drawing state
   const isDrawing = ref(false)
@@ -125,24 +138,13 @@ export function useCanvasEngine(
     textAnnotations.splice(0)
     selectedRegionId.value = null
     selectedTextId.value = null
-    initWorkingLayer()
     fitToCanvas()
     markDirty()
   }
 
-  function initWorkingLayer() {
-    const img = view.image
-    if (!img) return
-    workingCanvas = document.createElement('canvas')
-    workingCanvas.width = img.naturalWidth
-    workingCanvas.height = img.naturalHeight
-    workingCtx = workingCanvas.getContext('2d')!
-    workingCtx.drawImage(img, 0, 0)
-  }
-
   function fitToCanvas() {
     const canvas = canvasRef.value
-    const img = view.image
+    const img = getActiveImage()
     if (!canvas || !img) return
     const dpr = window.devicePixelRatio || 1
     const cw = canvas.width || (canvas.clientWidth * dpr)
@@ -190,9 +192,10 @@ export function useCanvasEngine(
   }
 
   function clampToImage(x: number, y: number, w: number, h: number) {
-    if (!view.image || !constrainToImage.value) return { x, y, width: w, height: h }
-    const iw = view.image.naturalWidth
-    const ih = view.image.naturalHeight
+    const img = getActiveImage()
+    if (!img || !constrainToImage.value) return { x, y, width: w, height: h }
+    const iw = img.naturalWidth
+    const ih = img.naturalHeight
     let nx = clamp(x, 0, iw - 1)
     let ny = clamp(y, 0, ih - 1)
     let nw = w, nh = h
@@ -360,28 +363,53 @@ export function useCanvasEngine(
     return null
   }
 
+  function hitTestLayer(sx: number, sy: number): ImageLayer | null {
+    for (let i = layers.value.length - 1; i >= 0; i--) {
+      const l = layers.value[i]
+      if (!l.visible) continue
+      const cx = (l.x + l.image.naturalWidth * l.scaleX / 2 - view.offsetX) * view.scale
+      const cy = (l.y + l.image.naturalHeight * l.scaleY / 2 - view.offsetY) * view.scale
+      const w = l.image.naturalWidth * l.scaleX * view.scale
+      const h = l.image.naturalHeight * l.scaleY * view.scale
+      if (Math.abs(sx - cx) <= w / 2 && Math.abs(sy - cy) <= h / 2) return l
+    }
+    return null
+  }
+
+  // layer dragging state
+  const isDraggingLayer = ref(false)
+  const isResizingLayer = ref(false)
+  const layerResizeHandle = ref('')
+  const dragStartLayerPos = ref<{ x: number; y: number; sx: number; sy: number; w: number; h: number }>({ x: 0, y: 0, sx: 1, sy: 1, w: 0, h: 0 })
+
   // --- brush/eraser ---
 
   function drawBrushStroke(ix: number, iy: number) {
-    if (!workingCtx || !workingCanvas) return
-    const ctx = workingCtx
+    const ctx = getWorkingCtx()
+    const layer = getActiveLayer()
+    if (!ctx || !layer) return
+    const lx = (ix - layer.x) / layer.scaleX
+    const ly = (iy - layer.y) / layer.scaleY
+    const brushSize = activeTool.value === 'brush' ? brushSettings.value.size : eraserSettings.value.size
+    const sx = brushSize / Math.max(layer.scaleX, layer.scaleY)
     if (activeTool.value === 'brush') {
       ctx.globalCompositeOperation = 'source-over'
       ctx.fillStyle = brushSettings.value.color
       ctx.beginPath()
-      ctx.arc(ix, iy, brushSettings.value.size / 2, 0, Math.PI * 2)
+      ctx.arc(lx, ly, sx / 2, 0, Math.PI * 2)
       ctx.fill()
     } else if (activeTool.value === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out'
       ctx.beginPath()
-      ctx.arc(ix, iy, eraserSettings.value.size / 2, 0, Math.PI * 2)
+      ctx.arc(lx, ly, sx / 2, 0, Math.PI * 2)
       ctx.fill()
       ctx.globalCompositeOperation = 'source-over'
     }
   }
 
   function drawBrushLine(fromX: number, fromY: number, toX: number, toY: number) {
-    if (!workingCtx || !workingCanvas) return
+    const ctx = getWorkingCtx()
+    if (!ctx) return
     const dist = Math.hypot(toX - fromX, toY - fromY)
     const size = activeTool.value === 'brush' ? brushSettings.value.size : eraserSettings.value.size
     const step = size * 0.3
@@ -402,7 +430,7 @@ export function useCanvasEngine(
   }
 
   function pasteRegion() {
-    if (!clipboard.value || !view.image) return
+    if (!clipboard.value || !getActiveImage()) return
     const src = clipboard.value
     const offset = 20 + pasteCount.value * 20
     const newX = src.origX + offset
@@ -475,21 +503,28 @@ export function useCanvasEngine(
 
     // magic wand tool
     if (activeTool.value === 'magic-wand') {
-      if (!workingCanvas) return
+      const wc = getWorkingCanvas()
+      const layer = getActiveLayer()
+      if (!wc || !layer) return
       const img = screenToImage(e.clientX, e.clientY)
-      const sx = Math.round(img.ix), sy = Math.round(img.iy)
-      const wctx = workingCanvas.getContext('2d')!
-      const imageData = wctx.getImageData(0, 0, workingCanvas.width, workingCanvas.height)
+      // offset seed to layer-local coords (accounting for position AND scale)
+      const sx = Math.round((img.ix - layer.x) / layer.scaleX)
+      const sy = Math.round((img.iy - layer.y) / layer.scaleY)
+      if (sx < 0 || sy < 0 || sx >= wc.width || sy >= wc.height) return
+      const wctx = wc.getContext('2d')!
+      const imageData = wctx.getImageData(0, 0, wc.width, wc.height)
       const result = magicWandSelect(imageData, sx, sy, magicWandTolerance.value)
       if (result && result.points.length >= 3) {
         snapshot?.()
+        // offset points back to global coords
+        const points = result.points.map(p => ({ x: p.x * layer.scaleX + layer.x, y: p.y * layer.scaleY + layer.y }))
         const region: CropRegion = {
           id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: nextRegionName(),
-          x: result.minX, y: result.minY,
-          width: result.width, height: result.height,
+          x: result.minX * layer.scaleX + layer.x, y: result.minY * layer.scaleY + layer.y,
+          width: result.width * layer.scaleX, height: result.height * layer.scaleY,
           shape: 'custom',
-          points: result.points,
+          points,
         }
         regions.push(region)
         selectRegion(region.id)
@@ -605,6 +640,46 @@ export function useCanvasEngine(
       return
     }
 
+    // check layer hit (for repositioning or resizing) — include small margin for handles
+    const hitL = hitTestLayer(sx, sy)
+    // also check active layer handles even if slightly outside bbox
+    const al2 = getActiveLayer()
+    let handleHit: string | null = null
+    if (al2 && al2.visible && layers.value.length > 1) {
+      const hsz = 12
+      const lx = (al2.x - view.offsetX) * view.scale
+      const ly = (al2.y - view.offsetY) * view.scale
+      const lw = al2.image.naturalWidth * al2.scaleX * view.scale
+      const lh = al2.image.naturalHeight * al2.scaleY * view.scale
+      const lcx = lx + lw / 2, lcy = ly + lh / 2
+      if (Math.abs(sx - lx) < hsz && Math.abs(sy - ly) < hsz) handleHit = 'nw'
+      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - ly) < hsz) handleHit = 'ne'
+      else if (Math.abs(sx - lx) < hsz && Math.abs(sy - (ly + lh)) < hsz) handleHit = 'sw'
+      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - (ly + lh)) < hsz) handleHit = 'se'
+      else if (Math.abs(sx - lcx) < hsz && Math.abs(sy - ly) < hsz) handleHit = 'n'
+      else if (Math.abs(sx - lcx) < hsz && Math.abs(sy - (ly + lh)) < hsz) handleHit = 's'
+      else if (Math.abs(sx - lx) < hsz && Math.abs(sy - lcy) < hsz) handleHit = 'w'
+      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - lcy) < hsz) handleHit = 'e'
+    }
+    if (handleHit && activeTool.value === 'select' && !hit && !hitT2) {
+      snapshot?.()
+      isResizingLayer.value = true
+      layerResizeHandle.value = handleHit
+      activeLayerId.value = al2!.id
+      const sp = al2!
+      dragStartLayerPos.value = { x: sp.x, y: sp.y, sx: sp.scaleX, sy: sp.scaleY, w: sp.image.naturalWidth, h: sp.image.naturalHeight }
+      dragStartMouse.value = { sx, sy }
+      return
+    }
+    if (hitL && activeTool.value === 'select' && !hit && !hitT2) {
+      snapshot?.()
+      activeLayerId.value = hitL.id
+      isDraggingLayer.value = true
+      dragStartLayerPos.value = { x: hitL.x, y: hitL.y, sx: 1, sy: 1, w: 0, h: 0 }
+      dragStartMouse.value = { sx, sy }
+      return
+    }
+
     // click on empty area
     if (activeTool.value === 'select') {
       selectRegion(null)
@@ -656,6 +731,40 @@ export function useCanvasEngine(
       const img = screenToImage(e.clientX, e.clientY)
       drawCurrentX.value = img.ix
       drawCurrentY.value = img.iy
+      markDirty()
+      return
+    }
+
+    // layer dragging
+    if (isDraggingLayer.value) {
+      const dx = (sx - dragStartMouse.value.sx) / view.scale
+      const dy = (sy - dragStartMouse.value.sy) / view.scale
+      const layer = getActiveLayer()
+      if (layer) {
+        layer.x = dragStartLayerPos.value.x + dx
+        layer.y = dragStartLayerPos.value.y + dy
+      }
+      markDirty()
+      return
+    }
+    if (isResizingLayer.value) {
+      const dx = (sx - dragStartMouse.value.sx) / view.scale
+      const dy = (sy - dragStartMouse.value.sy) / view.scale
+      const layer = getActiveLayer()
+      if (layer) {
+        const sp = dragStartLayerPos.value
+        const h = layerResizeHandle.value
+        let nx = sp.x, ny = sp.y, nw = sp.w * sp.sx, nh = sp.h * sp.sy
+        if (h.includes('e')) nw = sp.w * sp.sx + dx
+        if (h.includes('w')) { nx = sp.x + dx; nw = sp.w * sp.sx - dx }
+        if (h.includes('s')) nh = sp.h * sp.sy + dy
+        if (h.includes('n')) { ny = sp.y + dy; nh = sp.h * sp.sy - dy }
+        if (nw < 10) { if (h.includes('w')) nx = sp.x + sp.w * sp.sx - 10; nw = 10 }
+        if (nh < 10) { if (h.includes('n')) ny = sp.y + sp.h * sp.sy - 10; nh = 10 }
+        layer.x = nx; layer.y = ny
+        layer.scaleX = Math.max(0.1, nw / sp.w)
+        layer.scaleY = Math.max(0.1, nh / sp.h)
+      }
       markDirty()
       return
     }
@@ -757,6 +866,18 @@ export function useCanvasEngine(
       return
     }
 
+    if (isDraggingLayer.value) {
+      isDraggingLayer.value = false
+      markDirty()
+      return
+    }
+    if (isResizingLayer.value) {
+      isResizingLayer.value = false
+      layerResizeHandle.value = ''
+      markDirty()
+      return
+    }
+
     if (isDrawing.value) {
       const x1 = Math.min(drawStartX.value, drawCurrentX.value)
       const y1 = Math.min(drawStartY.value, drawCurrentY.value)
@@ -819,6 +940,20 @@ export function useCanvasEngine(
   function handleContextMenu(e: Event) { e.preventDefault() }
 
   function handleDoubleClick(_e: MouseEvent) {
+    // Ctrl+double-click: switch to layer under cursor (works in any tool mode)
+    if (_e.ctrlKey) {
+      const canvas = canvasRef.value!
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const sx = (_e.clientX - rect.left) * dpr
+      const sy = (_e.clientY - rect.top) * dpr
+      const hitL = hitTestLayer(sx, sy)
+      if (hitL) {
+        activeLayerId.value = hitL.id
+      }
+      return
+    }
+
     if (activeTool.value === 'custom' && customPoints.value.length >= 3) {
       finalizeCustomPolygon()
       return
@@ -915,6 +1050,31 @@ export function useCanvasEngine(
       return
     }
 
+    // check layer resize handles
+    const al = getActiveLayer()
+    if (al && al.visible && layers.value.length > 1) {
+      const hsz = 10
+      const lx = (al.x - view.offsetX) * view.scale
+      const ly = (al.y - view.offsetY) * view.scale
+      const lw = al.image.naturalWidth * al.scaleX * view.scale
+      const lh = al.image.naturalHeight * al.scaleY * view.scale
+      const lcx = lx + lw / 2, lcy = ly + lh / 2
+      let cursor = ''
+      if (Math.abs(sx - lx) < hsz && Math.abs(sy - ly) < hsz) cursor = 'nwse-resize'
+      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - ly) < hsz) cursor = 'nesw-resize'
+      else if (Math.abs(sx - lx) < hsz && Math.abs(sy - (ly + lh)) < hsz) cursor = 'nesw-resize'
+      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - (ly + lh)) < hsz) cursor = 'nwse-resize'
+      else if (Math.abs(sx - lcx) < hsz && Math.abs(sy - ly) < hsz) cursor = 'ns-resize'
+      else if (Math.abs(sx - lcx) < hsz && Math.abs(sy - (ly + lh)) < hsz) cursor = 'ns-resize'
+      else if (Math.abs(sx - lx) < hsz && Math.abs(sy - lcy) < hsz) cursor = 'ew-resize'
+      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - lcy) < hsz) cursor = 'ew-resize'
+      if (cursor) { canvas.style.cursor = cursor; return }
+      // check if hovering over layer body
+      if (Math.abs(sx - lcx) < lw / 2 && Math.abs(sy - lcy) < lh / 2) {
+        canvas.style.cursor = 'move'; return
+      }
+    }
+
     const hit = hitTestRegion(sx, sy) || hitTestText(sx, sy)
     canvas.style.cursor = hit ? 'grab' : 'default'
   }
@@ -927,11 +1087,11 @@ export function useCanvasEngine(
     const canvas = canvasRef.value
     if (!canvas) return
     const ctx = canvas.getContext('2d')!
-    const img = view.image
+    const hasImage = layers.value.length > 0
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    if (!img) {
+    if (!hasImage) {
       ctx.fillStyle = '#1a1a2e'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
       ctx.fillStyle = '#555'
@@ -952,23 +1112,54 @@ export function useCanvasEngine(
       }
     }
 
-    const dx = -view.offsetX * view.scale
-    const dy = -view.offsetY * view.scale
-    const dw = img.naturalWidth * view.scale
-    const dh = img.naturalHeight * view.scale
+    // draw all visible layers (reverse: first in list = top)
+    const visibleLayers = layers.value.filter(l => l.visible).reverse()
+    for (const layer of visibleLayers) {
+      const img = layer.image
+      const natW = img.naturalWidth * layer.scaleX, natH = img.naturalHeight * layer.scaleY
+      const ldx = (layer.x - view.offsetX) * view.scale
+      const ldy = (layer.y - view.offsetY) * view.scale
+      const ldw = natW * view.scale
+      const ldh = natH * view.scale
 
-    // draw image — show original or working copy
-    if (showOriginal.value || !workingCanvas) {
-      ctx.drawImage(img, dx, dy, dw, dh)
-    } else {
-      ctx.drawImage(workingCanvas, dx, dy, dw, dh)
+      if (showOriginal.value || !layer.workingCanvas) {
+        ctx.drawImage(img, ldx, ldy, ldw, ldh)
+      } else {
+        ctx.drawImage(layer.workingCanvas, ldx, ldy, ldw, ldh)
+      }
+
+      // selection outline for active layer
+      if (layer.id === activeLayerId.value && layers.value.length > 1) {
+        ctx.save()
+        ctx.strokeStyle = '#4fc3f7'
+        ctx.lineWidth = 2
+        ctx.setLineDash([5, 3])
+        ctx.strokeRect(ldx, ldy, ldw, ldh)
+        ctx.setLineDash([])
+        // resize handles
+        const hs = 6
+        ctx.fillStyle = '#4fc3f7'
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 1
+        const corners = [
+          [ldx, ldy], [ldx + ldw, ldy], [ldx, ldy + ldh], [ldx + ldw, ldy + ldh],
+          [ldx + ldw / 2, ldy], [ldx + ldw / 2, ldy + ldh],
+          [ldx, ldy + ldh / 2], [ldx + ldw, ldy + ldh / 2],
+        ]
+        for (const [cx, cy] of corners) {
+          ctx.fillRect(cx - hs, cy - hs, hs * 2, hs * 2)
+          ctx.strokeRect(cx - hs, cy - hs, hs * 2, hs * 2)
+        }
+        ctx.restore()
+      }
     }
 
-    // dark overlay with region cutouts
+    // dark overlay with region cutouts — covers full canvas
     if (!showOriginal.value) {
+    const odx = 0, ody = 0, odw = canvas.width, odh = canvas.height
     ctx.save()
     ctx.beginPath()
-    ctx.rect(dx, dy, dw, dh)
+    ctx.rect(odx, ody, odw, odh)
     for (const r of regions) {
       const rcx = (r.x + r.width / 2 - view.offsetX) * view.scale
       const rcy = (r.y + r.height / 2 - view.offsetY) * view.scale
@@ -1207,6 +1398,8 @@ export function useCanvasEngine(
   watch(showOriginal, () => markDirty())
   watch(constrainToImage, () => markDirty())
   watch(magicWandTolerance, () => markDirty())
+  watch(layers, () => markDirty(), { deep: true })
+  watch(activeLayerId, () => markDirty())
 
   // --- init ---
 
@@ -1257,8 +1450,8 @@ export function useCanvasEngine(
     initCanvas, destroy, scheduleRender,
     copySelectedRegion, pasteRegion,
     canCopy: () => !!getSelectedRegion(),
-    canPaste: () => !!clipboard.value && !!view.image,
-    getWorkingCanvas: () => workingCanvas,
+    canPaste: () => !!clipboard.value && !!getActiveImage(),
+    getWorkingCanvas,
     cancelCustomPolygon,
     finalizeCustomPolygon,
   }

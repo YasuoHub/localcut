@@ -15,11 +15,7 @@ function handleUploadImage(file: File) {
   const reader = new FileReader()
   reader.onload = (ev) => {
     const img = new Image()
-    img.onload = () => {
-      editor.selectedRegionIds.clear()
-      editor.textAnnotations.splice(0)
-      canvasWorkspace.value?.loadImage(img)
-    }
+    img.onload = () => editor.addLayer(img)
     img.src = ev.target?.result as string
   }
   reader.readAsDataURL(file)

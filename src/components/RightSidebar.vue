@@ -125,15 +125,15 @@ function updateText() {
 // ---- single export ----
 const exportingSingle = ref(false)
 async function handleExportSingle() {
-  const img = editor.imageElement
   const region = editor.selectedRegion
-  if (!img || !region) return
+  if (!editor.imageLoaded || !region) return
   exportingSingle.value = true
   try {
     await exportSingleRegion(
-      editor.workingCanvas || img, region,
+      editor.layers, region,
       exp.exportFormat, exp.exportQuality,
       exp.exportOutputWidth, exp.exportOutputHeight, exp.exportDpr,
+      editor.showOriginal,
       editor.textAnnotations,
     )
   } catch (err) { console.error('Export failed:', err) }
@@ -164,18 +164,24 @@ function checkedRegions(): CropRegion[] {
 }
 
 const exporting = ref(false)
+
+// layer rename state
+const renamingId = ref<string | null>(null)
+const renameValue = ref('')
+
 async function handleBatchExport() {
-  const img = editor.imageElement
-  if (!img || editor.regions.length === 0) return
+  if (!editor.imageLoaded || editor.regions.length === 0) return
   const toExport = checkedRegions()
   if (toExport.length === 0) return
   exporting.value = true
   try {
     // 批量导出始终按裁剪框原始宽高，忽略自定义输出尺寸
     const blob = await exportRegions(
-      editor.workingCanvas || img, toExport,
+      editor.layers, toExport,
       exp.exportFormat, exp.exportQuality,
-      null, null, exp.exportDpr, editor.textAnnotations,
+      null, null, exp.exportDpr,
+      editor.showOriginal,
+      editor.textAnnotations,
     )
     downloadZip(blob)
   } catch (err) { console.error('Export failed:', err) }
@@ -186,6 +192,36 @@ async function handleBatchExport() {
 <template>
   <aside class="sidebar">
     <div class="top-half scrollbar">
+
+    <!-- Layer panel -->
+    <section class="section" v-if="editor.layers.length > 0">
+      <div class="section-title">图层</div>
+      <div class="layer-list scrollbar">
+        <div
+          v-for="(layer, idx) in editor.layers" :key="layer.id"
+          class="layer-item" :class="{ active: layer.id === editor.activeLayerId }"
+          @click="editor.setActiveLayer(layer.id)"
+        >
+          <span class="layer-visibility" @click.stop="history.snapshot(); editor.toggleLayerVisible(layer.id)">{{ layer.visible ? '👁' : '—' }}</span>
+          <span class="layer-name" v-if="renamingId !== layer.id" @dblclick.stop="renamingId = layer.id; renameValue = layer.name">{{ layer.name }}</span>
+          <input
+            v-else
+            class="layer-rename-input"
+            v-model="renameValue"
+            @blur="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
+            @keyup.enter="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
+            @click.stop
+            ref="renameInput"
+            autofocus
+          />
+          <span class="layer-order-btns">
+            <button class="layer-order-btn" :disabled="idx === 0" @click.stop="history.snapshot(); editor.moveLayerUp(layer.id)">▲</button>
+            <button class="layer-order-btn" :disabled="idx === editor.layers.length - 1" @click.stop="history.snapshot(); editor.moveLayerDown(layer.id)">▼</button>
+          </span>
+          <button class="layer-delete" title="删除图层" @click.stop="history.snapshot(); editor.removeLayer(layer.id)">×</button>
+        </div>
+      </div>
+    </section>
 
     <!-- Brush settings -->
     <section class="section" v-if="editor.activeTool === 'brush'">
@@ -271,7 +307,7 @@ async function handleBatchExport() {
     <div class="bottom-half">
     <section class="section region-group">
       <div class="section-title">裁剪区域 [{{ editor.regions.length }}]
-        <button  class="clear-all-btn" title="一键清空" @click="editor.regions.splice(0); editor.selectedRegionId = null; editor.selectedRegionIds.clear()">清空</button>
+        <button  class="clear-all-btn" title="一键清空" @click="history.snapshot(); editor.clearRegions()">清空</button>
       </div>
       <div v-if="editor.regions.length === 0" class="empty">暂无区域</div>
       <div v-else class="region-list scrollbar">
@@ -284,11 +320,11 @@ async function handleBatchExport() {
           <span class="region-shape-icon">{{ shapeIcons[r.shape] ?? '▭' }}</span>
           <span class="region-name">{{ r.name }}</span>
           <span class="region-dims">{{ Math.round(r.width) }}×{{ Math.round(r.height) }}</span>
-          <button class="region-delete" title="删除" @click.stop="editor.deleteRegion(r.id); history.snapshot()">×</button>
+          <button class="region-delete" title="删除" @click.stop="history.snapshot(); editor.deleteRegion(r.id)">×</button>
         </div>
       </div>
       <button class="btn-primary export-btn" :disabled="exporting || editor.regions.length === 0" @click="handleBatchExport">
-        {{ exporting ? '导出中...' : `批量导出 — ${checkedCount} 项` }}
+        {{ exporting ? '导出中...' : `批量导出 — ${checkedCount || editor.regions.length} 项` }}
       </button>
     </section>
     </div>
@@ -327,6 +363,20 @@ async function handleBatchExport() {
 .region-shape-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
 .region-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .region-dims { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+
+.layer-list { display: flex; flex-direction: column; gap: 2px; max-height: 120px; overflow-y: auto; }
+.layer-item { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: var(--radius); cursor: pointer; font-size: 11px; }
+.layer-item:hover { background: var(--bg-hover); }
+.layer-item.active { background: rgba(79, 195, 247, 0.1); outline: 1px solid rgba(79, 195, 247, 0.3); }
+.layer-visibility { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+.layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-rename-input { flex: 1; background: var(--bg-primary); border: 1px solid var(--accent); border-radius: 3px; color: var(--text-primary); font-size: 11px; padding: 1px 4px; outline: none; min-width: 0; }
+.layer-order-btns { display: flex; flex-shrink: 0; }
+.layer-order-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 8px; padding: 0 2px; }
+.layer-order-btn:hover { color: var(--text-primary); }
+.layer-order-btn:disabled { opacity: 0.3; cursor: default; }
+.layer-delete { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 0 3px; border-radius: 3px; }
+.layer-delete:hover { background: rgba(229, 92, 92, 0.2); color: var(--danger); }
 .region-delete {
   background: none; border: none; color: var(--text-muted); cursor: pointer;
   font-size: 11px; padding: 1px 5px; border-radius: 3px; flex-shrink: 0;

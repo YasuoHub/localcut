@@ -19,6 +19,7 @@ const {
   brushSettings, eraserSettings,
   textAnnotations, selectedTextId,
   constrainToImage, magicWandTolerance, showOriginal,
+  layers, activeLayerId,
 } = storeToRefs(editor)
 
 const engine = useCanvasEngine(
@@ -30,6 +31,7 @@ const engine = useCanvasEngine(
   constrainToImage,
   magicWandTolerance,
   showOriginal,
+  layers, activeLayerId,
   history.snapshot,
 )
 
@@ -63,8 +65,7 @@ function drawRulers() {
   hctx.fillStyle = '#1a1a2e'
   hctx.fillRect(0, 0, hc.width, hc.height)
 
-  const img = engine.view.image
-  if (!img) return
+  if (!editor.imageLoaded) return
 
   // --- tick interval ---
   const targetTickSpacing = 80
@@ -127,16 +128,8 @@ watch(
 watch(regions, () => engine.scheduleRender(), { deep: true })
 watch(textAnnotations, () => engine.scheduleRender(), { deep: true })
 
-// Sync image state from engine -> store
-watch(
-  () => engine.view.image,
-  (img) => {
-    editor.imageElement = img ?? null
-    editor.imageLoaded = !!img
-    editor.workingCanvas = engine.getWorkingCanvas()
-    raf(drawRulers)
-  },
-)
+// Trigger ruler redraw when layers change
+watch(layers, () => raf(drawRulers), { deep: true })
 
 function selectRegion(id: string) { engine.selectRegion(id) }
 function selectText(id: string) { engine.selectText(id) }
@@ -174,7 +167,7 @@ function handleDrop(e: DragEvent) {
   const reader = new FileReader()
   reader.onload = (ev) => {
     const img = new Image()
-    img.onload = () => engine.loadImage(img)
+    img.onload = () => { editor.addLayer(img); engine.fitToCanvas() }
     img.src = ev.target?.result as string
   }
   reader.readAsDataURL(file)
@@ -199,12 +192,12 @@ onBeforeUnmount(() => engine.destroy())
     <canvas ref="vrulerRef" class="ruler-v" />
     <main ref="containerRef" class="workspace" @dragover="handleDragOver" @drop="handleDrop">
       <canvas ref="canvasRef" class="canvas" />
-      <div v-if="!engine.view.image" class="drop-hint">
+      <div v-if="!editor.imageLoaded" class="drop-hint">
         <div class="drop-icon">+</div>
         <div>拖拽图片到此处或点击上传</div>
         <div class="drop-formats">支持 PNG / JPG / WebP 格式</div>
       </div>
-      <label v-if="engine.view.image" class="show-original-toggle">
+      <label v-if="editor.imageLoaded" class="show-original-toggle">
         <input type="checkbox" v-model="editor.showOriginal" />
         <span class="toggle-track">
           <span class="toggle-thumb"></span>

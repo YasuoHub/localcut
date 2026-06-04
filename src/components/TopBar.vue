@@ -28,7 +28,12 @@ const showSettings = ref(false)
           <div class="shortcut-item"><kbd>Ctrl+Y</kbd> 重做</div>
           <div class="shortcut-item"><kbd>Ctrl+C</kbd> 复制区域</div>
           <div class="shortcut-item"><kbd>Ctrl+V</kbd> 粘贴区域</div>
-          <div class="shortcut-item"><kbd>Delete</kbd> 删除区域</div>
+          <div class="shortcut-item"><kbd>Delete</kbd> 删除选中区域</div>
+          <div class="shortcut-item"><kbd>方向键</kbd> 微移选中区域</div>
+          <div class="shortcut-item"><kbd>Shift+方向键</kbd> 快速微移</div>
+          <div class="shortcut-item"><kbd>Ctrl+双击</kbd> 切换图层</div>
+          <div class="shortcut-item"><kbd>Enter</kbd> 完成多边形</div>
+          <div class="shortcut-item"><kbd>Esc</kbd> 取消多边形</div>
           <div class="shortcut-item"><kbd>Space+拖拽</kbd> 平移画布</div>
           <div class="shortcut-item"><kbd>滚轮</kbd> 缩放画布</div>
         </div>
