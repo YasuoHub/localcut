@@ -351,11 +351,24 @@ export function useCanvasEngine(
       const h = r.height * view.scale
       if (Math.abs(sx - cx) <= w / 2 && Math.abs(sy - cy) <= h / 2) {
         if (r.shape === 'rect') return r
+        if (r.shape === 'roundrect') {
+          const canvas = canvasRef.value!
+          const ctx = canvas.getContext('2d')!
+          ctx.save()
+          const radius = r.borderRadius ?? Math.min(w, h) * 0.2
+          ctx.beginPath()
+          ctx.roundRect(cx - w / 2, cy - h / 2, w, h, radius)
+          const inside = ctx.isPointInPath(sx, sy)
+          ctx.restore()
+          if (inside) return r
+          continue
+        }
+        // all other shapes: use canvas isPointInPath
         const canvas = canvasRef.value!
         const ctx = canvas.getContext('2d')!
         ctx.save()
         const sp = screenPoints(r)
-        drawShapePath(ctx, r.shape, cx, cy, w, h, sp)
+        drawShapePath(ctx, r.shape, cx, cy, w, h, sp, r.borderRadius)
         const inside = ctx.isPointInPath(sx, sy)
         ctx.restore()
         if (inside) return r
@@ -461,7 +474,7 @@ export function useCanvasEngine(
   function copySelectedRegion() {
     const sel = getSelectedRegion()
     if (!sel) return
-    clipboard.value = { shape: sel.shape, width: sel.width, height: sel.height, name: sel.name, origX: sel.x, origY: sel.y, points: sel.points ? [...sel.points] : undefined }
+    clipboard.value = { shape: sel.shape, width: sel.width, height: sel.height, name: sel.name, origX: sel.x, origY: sel.y, points: sel.points ? sel.points.map(p => ({ ...p })) : undefined }
     pasteCount.value = 0
   }
 
@@ -649,17 +662,15 @@ export function useCanvasEngine(
       const wctx = wc.getContext('2d')!
       const imageData = wctx.getImageData(0, 0, wc.width, wc.height)
       const result = magicWandSelect(imageData, sx, sy, magicWandTolerance.value)
-      if (result && result.points.length >= 3) {
+      if (result && (result.shape === 'circle' || (result.points && result.points.length >= 3))) {
         snapshot?.()
-        // offset points back to global coords
-        const points = result.points.map(p => ({ x: p.x * layer.scaleX + layer.x, y: p.y * layer.scaleY + layer.y }))
         const region: CropRegion = {
           id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: nextRegionName(),
           x: result.minX * layer.scaleX + layer.x, y: result.minY * layer.scaleY + layer.y,
           width: result.width * layer.scaleX, height: result.height * layer.scaleY,
-          shape: 'custom',
-          points,
+          shape: result.shape || 'custom',
+          points: result.points?.map(p => ({ x: p.x * layer.scaleX + layer.x, y: p.y * layer.scaleY + layer.y })),
         }
         regions.push(region)
         selectRegion(region.id)
@@ -1581,7 +1592,7 @@ export function useCanvasEngine(
       const rcy = (r.y + r.height / 2 - view.offsetY) * view.scale
       const rw = r.width * view.scale
       const rh = r.height * view.scale
-      addShapeToPath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r))
+      addShapeToPath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius)
     }
     ctx.fillStyle = 'rgba(0,0,0,0.35)'
     ctx.fill('evenodd')
@@ -1602,7 +1613,7 @@ export function useCanvasEngine(
       ctx.shadowBlur = 6
       ctx.strokeStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : 'rgba(255,255,255,0.7)'
       ctx.lineWidth = isSelected ? 2.5 : isMultiSelected ? 1.8 : 1.5
-      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r))
+      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius)
       ctx.stroke()
       ctx.restore()
 
@@ -1610,7 +1621,7 @@ export function useCanvasEngine(
       ctx.fillStyle = isSelected ? 'rgba(79,195,247,0.12)' : isMultiSelected ? 'rgba(111,200,247,0.08)' : 'rgba(255,255,255,0.06)'
       ctx.shadowColor = 'rgba(0,0,0,0.25)'
       ctx.shadowBlur = primary ? 8 : 4
-      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r))
+      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius)
       ctx.fill()
       ctx.restore()
 

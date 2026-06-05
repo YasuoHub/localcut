@@ -35,7 +35,7 @@ export function floodFill(
 
   const mask = new Uint8Array(width * height)
   const queue: number[] = [sx, sy]
-  const dirs = [-1, 0, 1, -1, 1, -1, 0, 1, -1] // 8-neighbor: (dx,dy) pairs at i,i+1
+  const dirs = [-1, 0, 1, -1, 1, -1, 0, 1, -1]
   mask[sy * width + sx] = 1
   let minX = sx, minY = sy, maxX = sx, maxY = sy
   let qi = 0, count = 1
@@ -78,7 +78,6 @@ export function traceContour(
   maxX: number,
   maxY: number,
 ): { x: number; y: number }[] {
-  // find the first boundary pixel (selected pixel with unselected neighbor to its left or top)
   let startX = -1, startY = -1
   findStart: for (let y = minY; y <= maxY; y++) {
     for (let x = minX; x <= maxX; x++) {
@@ -90,28 +89,16 @@ export function traceContour(
   }
   if (startX < 0) return []
 
-  // 8-direction clockwise: E, SE, S, SW, W, NW, N, NE
   const dx = [1, 1, 0, -1, -1, -1, 0, 1]
   const dy = [0, 1, 1, 1, 0, -1, -1, -1]
 
-  // backtrack directions (opposite order for finding entry direction)
-  function neighbor(x: number, y: number, dir: number): boolean {
-    const nx = x + dx[dir]
-    const ny = y + dy[dir]
-    if (nx < 0 || ny < 0 || nx >= width || ny >= height) return false
-    return mask[ny * width + nx] === 1
-  }
-
   const contour: { x: number; y: number }[] = []
-  let cx = startX, cy = startY
-  let dir = 0 // start looking east
-
+  let cx = startX, cy = startY, dir = 0
   const maxSteps = (maxX - minX + maxY - minY) * 4 + 1000
   let steps = 0
 
   do {
     contour.push({ x: cx, y: cy })
-    // search clockwise from (dir + 6) mod 8 for the next boundary pixel
     let found = false
     for (let i = 0; i < 8; i++) {
       const nd = (dir + 6 + i) % 8
@@ -131,49 +118,203 @@ export function traceContour(
   return contour
 }
 
-/** Ramer-Douglas-Peucker line simplification. */
-export function simplifyContour(points: { x: number; y: number }[], epsilon: number): { x: number; y: number }[] {
-  if (points.length < 3) return points
-
-  function perpendicularDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-    const dx = bx - ax, dy = by - ay
-    if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay)
-    const t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
-    const clamped = Math.max(0, Math.min(1, t))
-    return Math.hypot(px - (ax + clamped * dx), py - (ay + clamped * dy))
-  }
-
-  function rdp(start: number, end: number): { x: number; y: number }[] {
-    if (end - start <= 1) return [points[start]]
-    let maxD = 0, maxI = start
-    for (let i = start + 1; i < end; i++) {
-      const d = perpendicularDist(points[i].x, points[i].y, points[start].x, points[start].y, points[end].x, points[end].y)
-      if (d > maxD) { maxD = d; maxI = i }
+/** Moving average smoothing — reduces pixel-level stair-stepping. */
+export function smoothMovingAverage(points: { x: number; y: number }[], radius: number): { x: number; y: number }[] {
+  if (points.length < 3 || radius < 1) return points
+  const n = points.length
+  const result: { x: number; y: number }[] = []
+  for (let i = 0; i < n; i++) {
+    let sx = 0, sy = 0, count = 0
+    for (let j = -radius; j <= radius; j++) {
+      const idx = (i + j + n) % n
+      sx += points[idx].x
+      sy += points[idx].y
+      count++
     }
-    if (maxD < epsilon) return [points[start]]
-    return [...rdp(start, maxI), ...rdp(maxI, end)]
+    result.push({ x: sx / count, y: sy / count })
   }
-
-  const result = rdp(0, points.length - 1)
-  result.push(points[points.length - 1])
   return result
 }
 
-/** Run full magic wand selection: flood fill → contour trace → simplify. */
+/** Curvature-based adaptive simplification.
+ *  Straight sections (low deviation) → keep only endpoints.
+ *  Curved sections → keep vertices at fixed angle intervals.
+ *  Sharp corners → always keep.
+ */
+export function adaptiveSimplify(
+  points: { x: number; y: number }[],
+  angleThresholdDeg: number,
+  straightTolerance: number,
+): { x: number; y: number }[] {
+  if (points.length < 4) return points
+
+  const n = points.length
+  const angleThreshold = (angleThresholdDeg * Math.PI) / 180
+
+  // compute edge angles and turning angles
+  const edges: { dx: number; dy: number; len: number; angle: number }[] = []
+  for (let i = 0; i < n; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % n]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len = Math.sqrt(dx * dx + dy * dy)
+    edges.push({ dx, dy, len, angle: Math.atan2(dy, dx) })
+  }
+
+  // compute turning angle at each vertex (angle change between incoming and outgoing edge)
+  const turnAngles: number[] = []
+  for (let i = 0; i < n; i++) {
+    let da = edges[(i - 1 + n) % n].angle - edges[i].angle
+    while (da > Math.PI) da -= 2 * Math.PI
+    while (da < -Math.PI) da += 2 * Math.PI
+    turnAngles.push(Math.abs(da))
+  }
+
+  // classify each vertex: corner, curve, or straight
+  const isCorner = turnAngles.map(a => a > angleThreshold)
+
+  // mark vertices to keep
+  const keep = new Array(n).fill(false)
+  keep[0] = true // always keep first
+  for (let i = 1; i < n; i++) {
+    keep[i] = isCorner[i] || isCorner[(i - 1 + n) % n] // keep at corners
+  }
+
+  // on straight sections between corners, collapse to just start/end
+  // on curved sections between corners, keep at regular angular intervals
+  let segStart = 0
+  const result: { x: number; y: number }[] = [points[0]]
+
+  for (let i = 1; i <= n; i++) {
+    const idx = i % n
+    if (i === n || isCorner[idx]) {
+      // segment from segStart to idx
+      if (i > segStart + 1) {
+        const isCurved = isSegmentCurved(points, segStart, idx, straightTolerance)
+        if (isCurved) {
+          // curved: keep vertices at angle intervals
+          let cumAngle = 0
+          for (let j = segStart + 1; j < i; j++) {
+            cumAngle += turnAngles[j % n]
+            if (cumAngle >= angleThreshold || j === i - 1) {
+              result.push(points[j])
+              cumAngle = 0
+            }
+          }
+        }
+        // straight: nothing added between endpoints
+      }
+      if (i < n) {
+        result.push(points[idx])
+        segStart = idx
+      }
+    }
+  }
+
+  if (result.length < 3) return points
+  return result
+}
+
+/** Check if a segment of the contour is curved (high cumulative deviation from straight line). */
+function isSegmentCurved(
+  points: { x: number; y: number }[],
+  start: number,
+  end: number,
+  tolerance: number,
+): boolean {
+  const a = points[start]
+  const b = points[end]
+  const dx = b.x - a.x, dy = b.y - a.y
+  const segLen = Math.sqrt(dx * dx + dy * dy)
+  if (segLen < 1) return false
+
+  let maxDev = 0
+  for (let i = start + 1; i < end; i++) {
+    const p = points[i]
+    // perpendicular distance from point to line ab
+    const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (segLen * segLen)
+    const projX = a.x + t * dx
+    const projY = a.y + t * dy
+    const dev = Math.hypot(p.x - projX, p.y - projY)
+    if (dev > maxDev) maxDev = dev
+  }
+  return maxDev > tolerance
+}
+
+/**
+ * Detect if a closed contour is approximately a circle/ellipse.
+ * Returns { shape, rx, ry } or null if not circular enough.
+ */
+function detectCircle(
+  points: { x: number; y: number }[],
+  threshold: number,
+): { shape: 'circle'; cx: number; cy: number; rx: number; ry: number } | null {
+  if (points.length < 8) return null
+
+  // centroid and bounding box
+  let sx = 0, sy = 0
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of points) {
+    sx += p.x; sy += p.y
+    if (p.x < minX) minX = p.x
+    if (p.x > maxX) maxX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+  const n = points.length
+  const cx = sx / n, cy = sy / n
+
+  // compute average distance from centroid
+  let avgDist = 0
+  const dists: number[] = []
+  for (const p of points) {
+    const d = Math.hypot(p.x - cx, p.y - cy)
+    dists.push(d)
+    avgDist += d
+  }
+  avgDist /= n
+
+  // check variance: if most points are within threshold% of avg distance, it's a circle
+  let inliers = 0
+  for (const d of dists) {
+    if (Math.abs(d - avgDist) / avgDist < threshold) inliers++
+  }
+  const ratio = inliers / n
+
+  if (ratio < 0.85) return null
+
+  // ellipse: use bounding box radii
+  const rx = (maxX - minX) / 2
+  const ry = (maxY - minY) / 2
+
+  return { shape: 'circle', cx, cy, rx: Math.max(rx, 1), ry: Math.max(ry, 1) }
+}
+
+/** Run full magic wand: flood fill → trace → smooth → shape detect / simplify. */
 export function magicWandSelect(
   imageData: ImageData,
   seedX: number,
   seedY: number,
   tolerance: number,
-  simplifyEpsilon = 2,
-): { points: { x: number; y: number }[]; minX: number; minY: number; width: number; height: number } | null {
+  simplifyEpsilon = 1.5,
+): { points: { x: number; y: number }[]; shape?: 'circle'; minX: number; minY: number; width: number; height: number } | null {
   const fill = floodFill(imageData, seedX, seedY, tolerance)
   if (!fill) return null
 
   const contour = traceContour(fill.mask, imageData.width, imageData.height, fill.minX, fill.minY, fill.maxX, fill.maxY)
   if (contour.length < 3) return null
 
-  const simplified = simplifyContour(contour, simplifyEpsilon)
+  // moving-average smooth
+  const smoothed = smoothMovingAverage(contour, 2)
+
+  // try to detect circle/ellipse
+  const circle = detectCircle(smoothed, 0.15)
+  if (circle) {
+    return { points: [], shape: 'circle', minX: circle.cx - circle.rx, minY: circle.cy - circle.ry, width: circle.rx * 2, height: circle.ry * 2 }
+  }
+
+  // not a circle: curvature-based adaptive simplification
+  const simplified = adaptiveSimplify(smoothed, 15, 2)
   if (simplified.length < 3) return null
 
   return {

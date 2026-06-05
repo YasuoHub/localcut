@@ -10,9 +10,10 @@ export function drawShapePath(
   shape: ShapeType,
   cx: number, cy: number, w: number, h: number,
   points?: { x: number; y: number }[],
+  borderRadius?: number,
 ) {
   ctx.beginPath()
-  addShapeToPath(ctx, shape, cx, cy, w, h, points)
+  addShapeToPath(ctx, shape, cx, cy, w, h, points, borderRadius)
 }
 
 /** Add shape to existing path without calling beginPath(). */
@@ -21,6 +22,7 @@ export function addShapeToPath(
   shape: ShapeType,
   cx: number, cy: number, w: number, h: number,
   points?: { x: number; y: number }[],
+  borderRadius?: number,
 ) {
   if (shape === 'custom' && points && points.length >= 3) {
     ctx.moveTo(points[0].x, points[0].y)
@@ -57,6 +59,10 @@ export function addShapeToPath(
       break
     case 'heart':
       heartPathNoBegin(ctx, cx, cy, w, h)
+      break
+    case 'roundrect':
+      ctx.roundRect(cx - w / 2, cy - h / 2, w, h, borderRadius ?? Math.min(w, h) * 0.2)
+      ctx.closePath()
       break
   }
 }

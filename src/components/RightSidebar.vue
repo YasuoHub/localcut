@@ -34,10 +34,10 @@ watch(() => exp.selectedPlatformPresetId, (id) => {
 })
 
 const shapeLabels: Record<string, string> = {
-  rect: '矩形', circle: '圆形', triangle: '三角形', diamond: '菱形', star: '星形', heart: '心形', custom: '多边形',
+  rect: '矩形', circle: '圆形', triangle: '三角形', diamond: '菱形', star: '星形', heart: '心形', custom: '多边形', roundrect: '圆角矩形',
 }
 const shapeIcons: Record<string, string> = {
-  rect: '▭', circle: '○', triangle: '△', diamond: '◇', star: '☆', heart: '♡', custom: '⬠',
+  rect: '▭', circle: '○', triangle: '△', diamond: '◇', star: '☆', heart: '♡', custom: '⬠', roundrect: '▢',
 }
 
 // ---- region editing (component-local form state) ----
@@ -48,6 +48,7 @@ const editWidth = ref(0)
 const editHeight = ref(0)
 const widthFocused = ref(false)
 const heightFocused = ref(false)
+const editBorderRadius = ref(0)
 
 function syncFromRegion(r: CropRegion) {
   if (!widthFocused.value) editWidth.value = Math.round(r.width)
@@ -64,6 +65,7 @@ watch(() => editor.selectedRegion, (r, old) => {
       editY.value = Math.round(r.y)
       editWidth.value = Math.round(r.width)
       editHeight.value = Math.round(r.height)
+      editBorderRadius.value = r.borderRadius ?? Math.round(Math.min(r.width, r.height) * 0.2)
     }
     if (!exp.customOutputSize) {
       exp.exportOutputWidth = Math.round(r.width)
@@ -112,6 +114,21 @@ function updatePosition() {
   history.snapshot()
   editor.selectedRegion.x = newX
   editor.selectedRegion.y = newY
+}
+
+function updateBorderRadius() {
+  if (!editor.selectedRegion || editor.selectedRegion.shape !== 'roundrect') return
+  const r = Math.max(0, editBorderRadius.value)
+  const defaults = Math.round(Math.min(editor.selectedRegion.width, editor.selectedRegion.height) * 0.2)
+  history.snapshot()
+  editor.selectedRegion.borderRadius = r === defaults ? undefined : r
+  editor.invalidateCanvas()
+}
+
+function onBorderRadiusInput() {
+  if (!editor.selectedRegion || editor.selectedRegion.shape !== 'roundrect') return
+  editor.selectedRegion.borderRadius = Math.max(0, editBorderRadius.value)
+  editor.invalidateCanvas()
 }
 
 // ---- text editing (component-local form state) ----
@@ -363,6 +380,10 @@ async function handleBatchExport() {
         <div class="field"><label>高度 (px)</label><input type="number" v-model.number="editHeight" min="1" @focus="heightFocused = true" @blur="heightFocused = false; updateSize()" /></div>
       </div>
       <div class="field"><label>形状</label><div class="readonly-value">{{ shapeLabels[editor.selectedRegion.shape] ?? editor.selectedRegion.shape }}</div></div>
+      <div class="field" v-if="editor.selectedRegion.shape === 'roundrect'">
+        <label>圆角 (px)</label>
+        <input type="number" v-model.number="editBorderRadius" min="0" @input="onBorderRadiusInput" @change="updateBorderRadius" />
+      </div>
       <div class="btn-row">
         <button class="btn-primary preview-single-btn" @click="handlePreviewSingle">预览</button>
         <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? '导出中...' : '导出此区域' }}</button>
@@ -488,7 +509,7 @@ async function handleBatchExport() {
 .empty { font-size: 11px; color: var(--text-muted); }
 .export-single-btn { flex: 1; }
 .btn-row { display: flex; gap: 6px; }
-.preview-single-btn { flex: 1; background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); }
+.preview-single-btn { background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); }
 .preview-single-btn:hover { opacity: 0.85; }
 .preview-batch-btn { background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); padding: 8px 16px; }
 .preview-batch-btn:hover { opacity: 0.85; }

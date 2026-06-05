@@ -15,6 +15,7 @@ const grid = ref({
   cellWidth: 800, cellHeight: 800,
   gapX: 0, gapY: 0,
   namePrefix: 'grid',
+  borderRadius: 0,
 })
 const gridReplace = ref(false)
 
@@ -98,6 +99,10 @@ function handleGuidSlice() {
         <div class="field">
           <label>命名前缀</label>
           <input type="text" v-model="grid.namePrefix" class="text-input" />
+        </div>
+        <div class="field">
+          <label>圆角</label>
+          <input type="number" v-model.number="grid.borderRadius" min="0" class="text-input" placeholder="0=直角" />
         </div>
         <div class="field">
           <label class="checkbox-label">

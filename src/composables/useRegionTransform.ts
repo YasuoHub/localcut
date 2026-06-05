@@ -13,6 +13,7 @@ function getShapeOutline(r: CropRegion): { x: number; y: number }[] {
     case 'custom':
       return (r.points && r.points.length >= 3) ? r.points : rectCorners(r)
     case 'rect':
+    case 'roundrect':
       return rectCorners(r)
     case 'circle': {
       const rx = w / 2

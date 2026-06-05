@@ -27,7 +27,7 @@ export const useHistoryStore = defineStore('history', () => {
   const canRedo = computed(() => redoStack.value.length > 0)
 
   function deepCloneRegions(list: CropRegion[]): CropRegion[] {
-    return list.map(r => ({ ...r, points: r.points ? [...r.points] : undefined }))
+    return list.map(r => ({ ...r, points: r.points ? r.points.map(p => ({ ...p })) : undefined }))
   }
   function deepCloneTexts(list: TextAnnotation[]): TextAnnotation[] {
     return list.map(t => ({ ...t }))

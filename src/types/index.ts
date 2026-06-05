@@ -1,4 +1,4 @@
-export type ShapeType = 'rect' | 'circle' | 'triangle' | 'diamond' | 'star' | 'heart' | 'custom'
+export type ShapeType = 'rect' | 'circle' | 'triangle' | 'diamond' | 'star' | 'heart' | 'custom' | 'roundrect'
 
 export type ToolType = 'select' | ShapeType | 'brush' | 'eraser' | 'text' | 'magic-wand'
 
@@ -17,6 +17,7 @@ export interface CropRegion {
   height: number
   shape: ShapeType
   points?: { x: number; y: number }[]
+  borderRadius?: number
 }
 
 export interface TextAnnotation {
@@ -78,6 +79,7 @@ export interface GridOptions {
   gapX: number
   gapY: number
   namePrefix: string
+  borderRadius: number
 }
 
 export interface DuplicateOptions {

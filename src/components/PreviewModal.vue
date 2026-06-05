@@ -11,6 +11,8 @@ const { renderRegionToCanvas } = useExport()
 const show = ref(false)
 const previews = ref<{ regionId: string; name: string; dataUrl: string }[]>([])
 const zoomRegion = ref<CropRegion | null>(null)
+const zoomIndex = ref(0)
+const zoomRegions = ref<CropRegion[]>([])
 const showZoom = ref(false)
 const loading = ref(false)
 
@@ -56,9 +58,20 @@ function close() { show.value = false }
 function openZoom(regionId: string) {
   const region = editor.regions.find(r => r.id === regionId)
   if (region) {
+    const allRegions = previewRegions()
+    const idx = allRegions.findIndex(r => r.id === regionId)
+    zoomRegions.value = allRegions
+    zoomIndex.value = idx >= 0 ? idx : 0
     zoomRegion.value = region
     showZoom.value = true
   }
+}
+
+function onNavigate(region: CropRegion) {
+  const allRegions = zoomRegions.value
+  const idx = allRegions.findIndex(r => r.id === region.id)
+  zoomIndex.value = idx >= 0 ? idx : 0
+  zoomRegion.value = region
 }
 
 function handleBatchExport() {
@@ -102,7 +115,7 @@ defineExpose({ open, close })
     </div>
   </Teleport>
 
-  <ImageZoomModal :region="zoomRegion" v-model:show="showZoom" />
+  <ImageZoomModal :region="zoomRegion" v-model:show="showZoom" :regions="zoomRegions" :current-index="zoomIndex" @navigate="onNavigate" />
 </template>
 
 <style scoped>

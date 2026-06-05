@@ -12,6 +12,7 @@ const tools: { id: ToolType; label: string; icon: string }[] = [
   { id: 'brush', label: '画笔', icon: '🖌' },
   { id: 'eraser', label: '橡皮', icon: '◼' },
   { id: 'rect', label: '矩形', icon: '▭' },
+  { id: 'roundrect', label: '圆角矩形', icon: '▢' },
   { id: 'circle', label: '圆形', icon: '○' },
   { id: 'triangle', label: '三角形', icon: '△' },
   { id: 'diamond', label: '菱形', icon: '◇' },

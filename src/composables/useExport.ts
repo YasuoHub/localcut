@@ -60,10 +60,10 @@ export function useExport() {
       x: (p.x - region.x) / region.width * rw,
       y: (p.y - region.y) / region.height * rh,
     }))
-    drawShapePath(ctx, region.shape, rw / 2, rh / 2, rw, rh, cssPoints)
+    drawShapePath(ctx, region.shape, rw / 2, rh / 2, rw, rh, cssPoints, region.borderRadius)
     ctx.clip()
-    const composite = compositeLayers(layers, region, rw, rh, showOriginal)
-    ctx.drawImage(composite, 0, 0)
+    const composite = compositeLayers(layers, region, cw, ch, showOriginal)
+    ctx.drawImage(composite, 0, 0, rw, rh)
     ctx.restore()
 
     // Draw text annotations
@@ -79,7 +79,7 @@ export function useExport() {
         const lineHeight = fs * 1.3
         const maxWidth = tw - 4
         ctx.save()
-        drawShapePath(ctx, region.shape, rw / 2, rh / 2, rw, rh, cssPoints)
+        drawShapePath(ctx, region.shape, rw / 2, rh / 2, rw, rh, cssPoints, region.borderRadius)
         ctx.clip()
         ctx.font = `${t.fontWeight} ${fs}px sans-serif`
         ctx.fillStyle = t.fontColor

@@ -13,14 +13,16 @@ export function generateGridRegions(options: GridOptions): CropRegion[] {
       const x = options.startX + col * (options.cellWidth + options.gapX)
       const y = options.startY + row * (options.cellHeight + options.gapY)
       const index = row * options.cols + col + 1
-      regions.push({
+      const region: CropRegion = {
         id: nextBatchRegionId(),
         name: `${options.namePrefix}_${String(index).padStart(3, '0')}`,
         x, y,
         width: options.cellWidth,
         height: options.cellHeight,
-        shape: 'rect',
-      })
+        shape: options.borderRadius > 0 ? 'roundrect' : 'rect',
+      }
+      if (options.borderRadius > 0) region.borderRadius = options.borderRadius
+      regions.push(region)
     }
   }
   return regions

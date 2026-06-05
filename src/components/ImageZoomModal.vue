@@ -7,8 +7,11 @@ import { useEditorStore } from '../stores/editor'
 const props = defineProps<{
   region: CropRegion | null
   show: boolean
+  /** Optional: list of regions for prev/next navigation */
+  regions?: CropRegion[]
+  currentIndex?: number
 }>()
-const emit = defineEmits<{ 'update:show': [v: boolean] }>()
+const emit = defineEmits<{ 'update:show': [v: boolean]; 'navigate': [region: CropRegion] }>()
 
 const editor = useEditorStore()
 const { renderRegionToCanvas } = useExport()
@@ -127,6 +130,15 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', onKeyDown); window
           class="zoom-img"
           draggable="false"
         />
+        <div v-if="regions && regions.length > 1" class="zoom-nav">
+          <button class="zoom-nav-btn"
+            :disabled="(currentIndex ?? 0) <= 0"
+            @click.stop="emit('navigate', regions[(currentIndex ?? 0) - 1])">◀ 上一张</button>
+          <span class="zoom-nav-info">{{ (currentIndex ?? 0) + 1 }} / {{ regions.length }}</span>
+          <button class="zoom-nav-btn"
+            :disabled="(currentIndex ?? 0) >= regions.length - 1"
+            @click.stop="emit('navigate', regions[(currentIndex ?? 0) + 1])">下一张 ▶</button>
+        </div>
         <div class="zoom-info">
           {{ Math.round(zoom * 100) }}% | 滚轮缩放 | 空格+拖拽平移
         </div>
@@ -165,4 +177,16 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', onKeyDown); window
   cursor: pointer; line-height: 1;
 }
 .zoom-close-btn:hover { color: var(--text-primary); }
+.zoom-nav {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px;
+}
+.zoom-nav-btn {
+  padding: 4px 12px; background: rgba(0,0,0,0.5); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12px; cursor: pointer;
+}
+.zoom-nav-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.zoom-nav-btn:disabled { opacity: 0.3; cursor: default; }
+.zoom-nav-info { font-size: 11px; color: var(--text-muted); }
 </style>
