@@ -15,16 +15,17 @@ const vrulerRef = ref<HTMLCanvasElement | null>(null)
 const editor = useEditorStore()
 const history = useHistoryStore()
 const {
-  regions, selectedRegionId, activeTool,
+  regions, selectedRegionId, selectedRegionIds, activeTool,
   brushSettings, eraserSettings,
   textAnnotations, selectedTextId,
   constrainToImage, magicWandTolerance, showOriginal,
-  layers, activeLayerId,
+  layers, activeLayerId, canvasVersion,
+  hGuides, vGuides,
 } = storeToRefs(editor)
 
 const engine = useCanvasEngine(
   canvasRef, containerRef,
-  regions.value, selectedRegionId,
+  regions.value, selectedRegionId, selectedRegionIds,
   activeTool,
   brushSettings, eraserSettings,
   textAnnotations.value, selectedTextId,
@@ -32,6 +33,9 @@ const engine = useCanvasEngine(
   magicWandTolerance,
   showOriginal,
   layers, activeLayerId,
+  canvasVersion,
+  hGuides, vGuides,
+  editor.removeHGuide, editor.removeVGuide,
   history.snapshot,
 )
 
@@ -162,15 +166,38 @@ defineExpose({
 function handleDragOver(e: DragEvent) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' }
 function handleDrop(e: DragEvent) {
   e.preventDefault()
-  const file = e.dataTransfer?.files?.[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = (ev) => {
-    const img = new Image()
-    img.onload = () => { editor.addLayer(img); engine.fitToCanvas() }
-    img.src = ev.target?.result as string
+  const files = e.dataTransfer?.files
+  if (!files || files.length === 0) return
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
+    if (!file.type.startsWith('image/')) continue
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const img = new Image()
+      img.onload = () => { editor.addLayer(img); engine.fitToCanvas() }
+      img.src = ev.target?.result as string
+    }
+    reader.readAsDataURL(file)
   }
-  reader.readAsDataURL(file)
+}
+
+// ---- ruler clicks → guide lines ----
+function handleRulerClick(e: MouseEvent, axis: 'h' | 'v') {
+  if (!(e.ctrlKey || e.metaKey)) return
+  const canvas = canvasRef.value!
+  const dpr = window.devicePixelRatio || 1
+  const view = engine.view
+  if (axis === 'h') {
+    // top ruler clicked → vertical guide at x in world coords
+    const sx = (e.clientX - (e.target as HTMLElement).getBoundingClientRect().left) * dpr
+    const x = Math.round(sx / view.scale + view.offsetX)
+    editor.addVGuide(x)
+  } else {
+    // left ruler clicked → horizontal guide at y in world coords
+    const sy = (e.clientY - (e.target as HTMLElement).getBoundingClientRect().top) * dpr
+    const y = Math.round(sy / view.scale + view.offsetY)
+    editor.addHGuide(y)
+  }
 }
 
 // ResizeObserver for main canvas
@@ -188,8 +215,8 @@ onBeforeUnmount(() => engine.destroy())
 <template>
   <div class="workspace-outer">
     <div class="ruler-corner" />
-    <canvas ref="hrulerRef" class="ruler-h" />
-    <canvas ref="vrulerRef" class="ruler-v" />
+    <canvas ref="hrulerRef" class="ruler-h" @mousedown="handleRulerClick($event, 'h')" />
+    <canvas ref="vrulerRef" class="ruler-v" @mousedown="handleRulerClick($event, 'v')" />
     <main ref="containerRef" class="workspace" @dragover="handleDragOver" @drop="handleDrop">
       <canvas ref="canvasRef" class="canvas" />
       <div v-if="!editor.imageLoaded" class="drop-hint">

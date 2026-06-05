@@ -92,21 +92,24 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   function toggleRegionCheck(id: string) {
-    const set = selectedRegionIds.value
-    if (set.has(id)) { set.delete(id) } else { set.add(id) }
+    const newSet = new Set(selectedRegionIds.value)
+    if (newSet.has(id)) { newSet.delete(id) } else { newSet.add(id) }
+    selectedRegionIds.value = newSet
   }
 
   function deleteRegion(id: string) {
     const idx = regions.value.findIndex(r => r.id === id)
     if (idx !== -1) regions.value.splice(idx, 1)
     if (selectedRegionId.value === id) selectedRegionId.value = null
-    selectedRegionIds.value.delete(id)
+    const newSet = new Set(selectedRegionIds.value)
+    newSet.delete(id)
+    selectedRegionIds.value = newSet
   }
 
   function clearRegions() {
     regions.value.splice(0)
     selectedRegionId.value = null
-    selectedRegionIds.value.clear()
+    selectedRegionIds.value = new Set()
   }
 
   function toggleLayerVisible(id: string) {
@@ -147,6 +150,42 @@ export const useEditorStore = defineStore('editor', () => {
   const constrainToImage = ref(false)
   const showOriginal = ref(false)
 
+  // ---- render trigger ----
+  const canvasVersion = ref(0)
+  function invalidateCanvas() { canvasVersion.value++ }
+
+  // ---- guide lines ----
+  const hGuides = ref<number[]>([]) // y positions
+  const vGuides = ref<number[]>([]) // x positions
+
+  function addHGuide(y: number) {
+    const rounded = Math.round(y)
+    if (!hGuides.value.includes(rounded)) {
+      hGuides.value = [...hGuides.value, rounded].sort((a, b) => a - b)
+      invalidateCanvas()
+    }
+  }
+  function addVGuide(x: number) {
+    const rounded = Math.round(x)
+    if (!vGuides.value.includes(rounded)) {
+      vGuides.value = [...vGuides.value, rounded].sort((a, b) => a - b)
+      invalidateCanvas()
+    }
+  }
+  function removeHGuide(y: number) {
+    hGuides.value = hGuides.value.filter(g => Math.abs(g - y) > 4)
+    invalidateCanvas()
+  }
+  function removeVGuide(x: number) {
+    vGuides.value = vGuides.value.filter(g => Math.abs(g - x) > 4)
+    invalidateCanvas()
+  }
+  function clearGuides() {
+    hGuides.value = []
+    vGuides.value = []
+    invalidateCanvas()
+  }
+
   return {
     layers, activeLayerId, activeLayer, imageLoaded,
     addLayer, removeLayer, setActiveLayer, renameLayer, moveLayerUp, moveLayerDown, toggleLayerVisible,
@@ -157,5 +196,7 @@ export const useEditorStore = defineStore('editor', () => {
     activeTool, setTool,
     brushSettings, eraserSettings, magicWandTolerance,
     constrainToImage, showOriginal,
+    canvasVersion, invalidateCanvas,
+    hGuides, vGuides, addHGuide, addVGuide, removeHGuide, removeVGuide, clearGuides,
   }
 })

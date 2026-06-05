@@ -5,12 +5,33 @@ import { useExport } from '../composables/useExport'
 import { useEditorStore } from '../stores/editor'
 import { useExportStore } from '../stores/export'
 import { useHistoryStore } from '../stores/history'
+import { PLATFORM_PRESETS } from '../constants/platformPresets'
+import {
+  flipRegionHorizontal, flipRegionVertical,
+  rotateRegionLeft90, rotateRegionRight90, rotateRegion,
+} from '../composables/useRegionTransform'
+import ExportNamingPanel from './right/ExportNamingPanel.vue'
+import ExportSizePanel from './right/ExportSizePanel.vue'
+import BatchCutPanel from './right/BatchCutPanel.vue'
+import TemplatePanel from './right/TemplatePanel.vue'
+import PreviewModal from './PreviewModal.vue'
+import ImageZoomModal from './ImageZoomModal.vue'
 
 const editor = useEditorStore()
 const exp = useExportStore()
 const history = useHistoryStore()
 
 const { exportSingleRegion, exportRegions, downloadZip } = useExport()
+
+// Watch platform preset to auto-fill size
+watch(() => exp.selectedPlatformPresetId, (id) => {
+  if (id) {
+    const preset = PLATFORM_PRESETS.find(p => p.id === id)
+    if (preset) {
+      exp.applyPlatformPreset(preset.width, preset.height)
+    }
+  }
+})
 
 const shapeLabels: Record<string, string> = {
   rect: '矩形', circle: '圆形', triangle: '三角形', diamond: '菱形', star: '星形', heart: '心形', custom: '多边形',
@@ -140,23 +161,60 @@ async function handleExportSingle() {
   finally { exportingSingle.value = false }
 }
 
-// ---- output size sync ----
-function handleOutputWChange() {
-  if (exp.exportLockAspect && editor.selectedRegion && exp.exportOutputWidth != null) {
-    exp.exportOutputHeight = Math.round(exp.exportOutputWidth * editor.selectedRegion.height / editor.selectedRegion.width)
-  }
+// ---- preview ----
+const previewModalRef = ref<InstanceType<typeof PreviewModal> | null>(null)
+const previewZoomRegion = ref<CropRegion | null>(null)
+const previewZoomShow = ref(false)
+
+function handlePreviewSingle() {
+  const region = editor.selectedRegion
+  if (!editor.imageLoaded || !region) return
+  previewZoomRegion.value = region
+  previewZoomShow.value = true
 }
-function handleOutputHChange() {
-  if (exp.exportLockAspect && editor.selectedRegion && exp.exportOutputHeight != null) {
-    exp.exportOutputWidth = Math.round(exp.exportOutputHeight * editor.selectedRegion.width / editor.selectedRegion.height)
+
+function handlePreviewBatch() {
+  if (!editor.imageLoaded || editor.regions.length === 0) return
+  previewModalRef.value?.open()
+}
+
+// ---- region transforms ----
+const rotateAngle = ref(45)
+
+function getRegionsToTransform(): CropRegion[] {
+  if (editor.selectedRegionIds.size > 0 && editor.selectedRegionId && editor.selectedRegionIds.has(editor.selectedRegionId)) {
+    return editor.regions.filter(r => editor.selectedRegionIds.has(r.id))
   }
+  const sel = editor.selectedRegion
+  return sel ? [sel] : []
+}
+
+function applyTransform(fn: (r: CropRegion) => void) {
+  const targets = getRegionsToTransform()
+  if (targets.length === 0) return
+  history.snapshot()
+  for (const r of targets) fn(r)
+  editor.invalidateCanvas()
+}
+
+function handleFlipH() { applyTransform(flipRegionHorizontal) }
+function handleFlipV() { applyTransform(flipRegionVertical) }
+function handleRotateLeft() { applyTransform(rotateRegionLeft90) }
+function handleRotateRight() { applyTransform(rotateRegionRight90) }
+function handleRotate() {
+  rotateAngle.value = Math.max(-360, Math.min(360, rotateAngle.value))
+  if (rotateAngle.value === 0) return
+  applyTransform(r => rotateRegion(r, rotateAngle.value))
 }
 
 // ---- region list ----
 const sortedRegions = computed(() => [...editor.regions].reverse())
 const checkedCount = computed(() => editor.selectedRegionIds.size)
 
-function selectRegion(id: string) { editor.selectRegion(id); editor.activeTool = 'select' }
+function selectRegion(id: string, _e: MouseEvent) {
+  editor.selectRegion(id)
+  editor.activeTool = 'select'
+}
 
 function checkedRegions(): CropRegion[] {
   if (editor.selectedRegionIds.size === 0) return editor.regions
@@ -175,13 +233,24 @@ async function handleBatchExport() {
   if (toExport.length === 0) return
   exporting.value = true
   try {
-    // 批量导出始终按裁剪框原始宽高，忽略自定义输出尺寸
+    const imageName = editor.activeLayer?.name?.replace(/\.[^.]+$/, '') ?? 'image'
+    const namingOptions = {
+      pattern: exp.filenamePattern,
+      imageName,
+    }
+    const bw = exp.batchUseCustomSize ? exp.batchOutputWidth : null
+    const bh = exp.batchUseCustomSize ? exp.batchOutputHeight : null
+    const fit = exp.batchUseCustomSize ? exp.batchFitMode : undefined
+    const fill = exp.batchFillColor
+
     const blob = await exportRegions(
       editor.layers, toExport,
       exp.exportFormat, exp.exportQuality,
-      null, null, exp.exportDpr,
+      exp.exportDpr,
       editor.showOriginal,
       editor.textAnnotations,
+      namingOptions,
+      bw, bh, fit, fill,
     )
     downloadZip(blob)
   } catch (err) { console.error('Export failed:', err) }
@@ -255,7 +324,10 @@ async function handleBatchExport() {
         <div class="field"><label>高度 (px)</label><input type="number" v-model.number="editHeight" min="1" @focus="heightFocused = true" @blur="heightFocused = false; updateSize()" /></div>
       </div>
       <div class="field"><label>形状</label><div class="readonly-value">{{ shapeLabels[editor.selectedRegion.shape] ?? editor.selectedRegion.shape }}</div></div>
-      <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? '导出中...' : '导出此区域' }}</button>
+      <div class="btn-row">
+        <button class="btn-primary preview-single-btn" @click="handlePreviewSingle">预览</button>
+        <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? '导出中...' : '导出此区域' }}</button>
+      </div>
     </section>
 
     <!-- Text properties -->
@@ -275,6 +347,32 @@ async function handleBatchExport() {
       <div class="empty">选择区域或文字以编辑属性</div>
     </section>
 
+    <!-- Region transforms -->
+    <section class="section" v-if="editor.selectedRegion || editor.selectedRegionIds.size > 0">
+      <div class="section-title">
+        区域变换
+        <span v-if="editor.selectedRegionIds.size > 0" class="count">{{ editor.selectedRegionIds.size }}区</span>
+      </div>
+      <div class="transform-row">
+        <button class="tf-btn" title="水平翻转" @click="handleFlipH">↔ 水平翻转</button>
+        <button class="tf-btn" title="垂直翻转" @click="handleFlipV">↕ 垂直翻转</button>
+      </div>
+      <div class="transform-row">
+        <button class="tf-btn" title="左转90°" @click="handleRotateLeft">↺ 左转90°</button>
+        <button class="tf-btn" title="右转90°" @click="handleRotateRight">↻ 右转90°</button>
+      </div>
+      <div class="field-row" style="align-items: flex-end;">
+        <div class="field" style="flex:1"><label>旋转角度</label><input type="number" v-model.number="rotateAngle" class="text-input" min="-360" max="360" /></div>
+        <div class="field"><button class="tf-btn" @click="handleRotate">旋转</button></div>
+      </div>
+    </section>
+
+    <!-- Batch cut -->
+    <BatchCutPanel />
+
+    <!-- Template -->
+    <TemplatePanel />
+
     <!-- Export settings -->
     <section class="section">
       <div class="section-title">导出设置</div>
@@ -286,20 +384,14 @@ async function handleBatchExport() {
         </div>
       </div>
       <div class="field" v-if="exp.exportFormat === 'jpeg' || exp.exportFormat === 'webp'"><label>质量: {{ exp.exportQuality }}%</label><input type="range" min="10" max="100" v-model.number="exp.exportQuality" /></div>
-      <div class="field"><label class="checkbox-label"><input type="checkbox" v-model="exp.customOutputSize" />自定义输出尺寸</label></div>
-      <div class="field-row">
-        <div class="field"><label>输出宽度</label>
-          <input v-if="exp.customOutputSize" type="number" v-model.number="exp.exportOutputWidth" min="1" @change="handleOutputWChange" />
-          <div v-else class="readonly-value">{{ exp.exportOutputWidth ?? '—' }}</div>
-        </div>
-        <div class="field"><label>输出高度</label>
-          <input v-if="exp.customOutputSize" type="number" v-model.number="exp.exportOutputHeight" min="1" @change="handleOutputHChange" />
-          <div v-else class="readonly-value">{{ exp.exportOutputHeight ?? '—' }}</div>
-        </div>
-      </div>
-      <div class="field" v-if="exp.customOutputSize"><label class="checkbox-label"><input type="checkbox" v-model="exp.exportLockAspect" />锁定宽高比</label></div>
       <div class="field"><label>设备像素比: {{ exp.exportDpr }}x</label><input type="range" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" /></div>
     </section>
+
+    <!-- Batch size -->
+    <ExportSizePanel />
+
+    <!-- File naming -->
+    <ExportNamingPanel />
 
     </div>
 
@@ -309,12 +401,12 @@ async function handleBatchExport() {
       <div class="section-title">裁剪区域 [{{ editor.regions.length }}]
         <button  class="clear-all-btn" title="一键清空" @click="history.snapshot(); editor.clearRegions()">清空</button>
       </div>
-      <div v-if="editor.regions.length === 0" class="empty">暂无区域</div>
+      <div v-if="editor.regions.length === 0" class="empty region-list">暂无区域</div>
       <div v-else class="region-list scrollbar">
         <div
           v-for="r in sortedRegions" :key="r.id"
           class="region-item" :class="{ selected: r.id === editor.selectedRegionId }"
-          @click="selectRegion(r.id)"
+          @click="selectRegion(r.id, $event)"
         >
           <input type="checkbox" :checked="editor.selectedRegionIds.has(r.id)" class="region-check" @click.stop @change="editor.toggleRegionCheck(r.id)" />
           <span class="region-shape-icon">{{ shapeIcons[r.shape] ?? '▭' }}</span>
@@ -323,12 +415,17 @@ async function handleBatchExport() {
           <button class="region-delete" title="删除" @click.stop="history.snapshot(); editor.deleteRegion(r.id)">×</button>
         </div>
       </div>
-      <button class="btn-primary export-btn" :disabled="exporting || editor.regions.length === 0" @click="handleBatchExport">
-        {{ exporting ? '导出中...' : `批量导出 — ${checkedCount || editor.regions.length} 项` }}
-      </button>
+      <div class="btn-row">
+        <button class="btn-primary preview-batch-btn" :disabled="editor.regions.length === 0" @click="handlePreviewBatch">批量预览</button>
+        <button class="btn-primary export-btn" :disabled="exporting || editor.regions.length === 0" @click="handleBatchExport">
+          {{ exporting ? '导出中...' : `批量导出 ${checkedCount || editor.regions.length} 项` }}
+        </button>
+      </div>
     </section>
     </div>
   </aside>
+  <PreviewModal ref="previewModalRef" />
+  <ImageZoomModal :region="previewZoomRegion" v-model:show="previewZoomShow" />
 </template>
 
 <style scoped>
@@ -350,7 +447,14 @@ async function handleBatchExport() {
 .checkbox-label { display: flex !important; align-items: center; gap: 6px; cursor: pointer; font-size: 12px !important; }
 .checkbox-label input { accent-color: var(--accent); }
 .empty { font-size: 11px; color: var(--text-muted); }
-.export-single-btn { width: 100%; margin-top: 4px; }
+.export-single-btn { flex: 1; }
+.btn-row { display: flex; gap: 6px; }
+.preview-single-btn { flex: 1; background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); }
+.preview-single-btn:hover { opacity: 0.85; }
+.preview-batch-btn { background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); padding: 8px 16px; }
+.preview-batch-btn:hover { opacity: 0.85; }
+.preview-batch-btn:disabled { opacity: 0.4; cursor: default; }
+.export-btn { flex: 1; }
 .color-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; padding: 2px; }
 .select-input { width: 100%; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; color: var(--text-primary); font-size: 12px; outline: none; }
 .select-input:focus { border-color: var(--accent); }
@@ -389,5 +493,12 @@ async function handleBatchExport() {
   font-size: 10px; padding: 1px 8px; border-radius: 3px; cursor: pointer;
 }
 .clear-all-btn:hover { border-color: var(--danger); color: var(--danger); }
-.export-btn { width: 100%; margin-top: 8px; flex-shrink: 0; }
+.export-btn { width: 100%; flex-shrink: 0; }
+.transform-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.tf-btn {
+  flex: 1; padding: 5px 8px; background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-secondary); font-size: 11px;
+  cursor: pointer; white-space: nowrap;
+}
+.tf-btn:hover { border-color: var(--accent); color: var(--accent); }
 </style>

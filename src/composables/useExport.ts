@@ -1,7 +1,9 @@
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
-import type { CropRegion, TextAnnotation, ImageFormat, ImageLayer } from '../types'
+import type { CropRegion, TextAnnotation, ImageFormat, ImageLayer, ExportNamingOptions, BatchOutputFitMode } from '../types'
 import { drawShapePath } from './shapeUtils'
+import { buildFilename, sanitizeFilename, ensureUniqueFilename, makeFilenameContext } from './useFilenamePattern'
+import { fitCanvasToSize } from './useExportFit'
 
 export function useExport() {
   /** Composite all visible layers into a region-sized canvas. */
@@ -16,10 +18,9 @@ export function useExport() {
     canvas.height = rh
     const ctx = canvas.getContext('2d')!
     ctx.imageSmoothingEnabled = true
-    for (const layer of layers) {
+    for (const layer of [...layers].reverse()) {
       if (!layer.visible) continue
       const src = (showOriginal || !layer.workingCanvas) ? layer.image : layer.workingCanvas
-      // draw the portion of this layer that overlaps the region, accounting for layer position AND scale
       const srcX = (region.x - layer.x) / layer.scaleX
       const srcY = (region.y - layer.y) / layer.scaleY
       const srcW = region.width / layer.scaleX
@@ -50,7 +51,6 @@ export function useExport() {
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
 
-    // Scale to CSS coordinate space
     ctx.save()
     ctx.scale(dpr, dpr)
 
@@ -118,18 +118,47 @@ export function useExport() {
     regions: CropRegion[],
     format: ImageFormat,
     quality: number,
-    outputWidth: number | null,
-    outputHeight: number | null,
     dpr: number,
     showOriginal: boolean,
     textAnnotations?: TextAnnotation[],
+    namingOptions?: ExportNamingOptions,
+    batchWidth?: number | null,
+    batchHeight?: number | null,
+    batchFit?: BatchOutputFitMode,
+    batchFill?: string,
   ): Promise<Blob> {
     const zip = new JSZip()
-    for (const region of regions) {
-      const canvas = renderRegionToCanvas(layers, region, outputWidth, outputHeight, dpr, showOriginal, textAnnotations)
+    const usedNames = new Set<string>()
+    const ext = format === 'jpeg' ? 'jpg' : format
+
+    for (let i = 0; i < regions.length; i++) {
+      const region = regions[i]
+      let canvas = renderRegionToCanvas(layers, region, batchWidth ?? null, batchHeight ?? null, dpr, showOriginal, textAnnotations)
+
+      // logical output dimensions (CSS pixels, for filename)
+      const outW = batchWidth ?? region.width
+      const outH = batchHeight ?? region.height
+
+      // Apply batch fit if enabled — use DPR-scaled dimensions to preserve resolution
+      if (batchWidth && batchHeight && batchFit && batchFit !== 'original') {
+        canvas = fitCanvasToSize(canvas, Math.round(batchWidth * dpr), Math.round(batchHeight * dpr), batchFit, batchFill ?? '#ffffff')
+      }
+
       const blob = await canvasToBlob(canvas, format, quality)
-      const ext = format === 'jpeg' ? 'jpg' : format
-      zip.file(`${region.name}.${ext}`, blob)
+
+      // Build filename
+      let filename: string
+      if (namingOptions) {
+        const ctx = makeFilenameContext(
+          namingOptions.imageName, region.name, i, Math.round(outW), Math.round(outH), ext,
+        )
+        const raw = buildFilename(namingOptions.pattern, ctx)
+        filename = ensureUniqueFilename(sanitizeFilename(raw) + '.' + ext, usedNames)
+        usedNames.add(filename)
+      } else {
+        filename = `${region.name}.${ext}`
+      }
+      zip.file(filename, blob)
     }
     return zip.generateAsync({ type: 'blob' })
   }
@@ -153,5 +182,5 @@ export function useExport() {
 
   function downloadZip(blob: Blob, filename = 'output.zip') { saveAs(blob, filename) }
 
-  return { exportRegions, exportSingleRegion, downloadZip }
+  return { exportRegions, exportSingleRegion, downloadZip, renderRegionToCanvas }
 }

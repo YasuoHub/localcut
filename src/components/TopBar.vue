@@ -26,16 +26,21 @@ const showSettings = ref(false)
           <div class="popover-title">快捷键</div>
           <div class="shortcut-item"><kbd>Ctrl+Z</kbd> 撤销</div>
           <div class="shortcut-item"><kbd>Ctrl+Y</kbd> 重做</div>
-          <div class="shortcut-item"><kbd>Ctrl+C</kbd> 复制区域</div>
+          <div class="shortcut-item"><kbd>Ctrl+C</kbd> 复制选中区域</div>
           <div class="shortcut-item"><kbd>Ctrl+V</kbd> 粘贴区域</div>
-          <div class="shortcut-item"><kbd>Delete</kbd> 删除选中区域</div>
-          <div class="shortcut-item"><kbd>方向键</kbd> 微移选中区域</div>
+          <div class="shortcut-item"><kbd>Shift+点击</kbd> 多选/取消多选</div>
+          <div class="shortcut-item"><kbd>Shift+拖拽</kbd> 框选多个区域</div>
+          <div class="shortcut-item"><kbd>Ctrl+拖拽</kbd> 拖动图层/区域(非选择模式)</div>
+          <div class="shortcut-item"><kbd>Delete</kbd> 删除选中(支持批量)</div>
+          <div class="shortcut-item"><kbd>方向键</kbd> 微移选中(支持批量)</div>
           <div class="shortcut-item"><kbd>Shift+方向键</kbd> 快速微移</div>
-          <div class="shortcut-item"><kbd>Ctrl+双击</kbd> 切换图层</div>
           <div class="shortcut-item"><kbd>Enter</kbd> 完成多边形</div>
           <div class="shortcut-item"><kbd>Esc</kbd> 取消多边形</div>
           <div class="shortcut-item"><kbd>Space+拖拽</kbd> 平移画布</div>
+          <div class="shortcut-item"><kbd>中键拖拽</kbd> 平移画布</div>
           <div class="shortcut-item"><kbd>滚轮</kbd> 缩放画布</div>
+          <div class="shortcut-item"><kbd>Ctrl+点击标尺</kbd> 添加参考线</div>
+          <div class="shortcut-item"><kbd>Ctrl+右键参考线</kbd> 删除参考线</div>
         </div>
       </div>
     </Teleport>

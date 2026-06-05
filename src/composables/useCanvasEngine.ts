@@ -40,6 +40,7 @@ export function useCanvasEngine(
   containerRef: Ref<HTMLElement | null>,
   regions: CropRegion[],
   selectedRegionId: Ref<string | null>,
+  selectedRegionIds: Ref<Set<string>>,
   activeTool: Ref<'select' | ShapeType | 'brush' | 'eraser' | 'text' | 'magic-wand'>,
   brushSettings: Ref<{ size: number; color: string }>,
   eraserSettings: Ref<{ size: number }>,
@@ -50,6 +51,11 @@ export function useCanvasEngine(
   showOriginal: Ref<boolean>,
   layers: Ref<ImageLayer[]>,
   activeLayerId: Ref<string | null>,
+  canvasVersion: Ref<number>,
+  hGuides: Ref<number[]>,
+  vGuides: Ref<number[]>,
+  removeHGuide?: (y: number) => void,
+  removeVGuide?: (x: number) => void,
   snapshot?: () => void,
 ) {
   const view = reactive<CanvasViewState>({
@@ -97,6 +103,7 @@ export function useCanvasEngine(
   const dragStartPoints = ref<{ x: number; y: number }[] | null>(null)
   const dragStartMouse = ref<{ sx: number; sy: number }>({ sx: 0, sy: 0 })
   const draggingText = ref(false) // true if dragging a text annotation
+  const dragStartMultiBounds = ref<Map<string, { x: number; y: number; width: number; height: number; points?: { x: number; y: number }[] }> | null>(null)
 
   // brush/eraser state
   const isBrushing = ref(false)
@@ -107,6 +114,12 @@ export function useCanvasEngine(
   const panStartMouse = ref<{ sx: number; sy: number }>({ sx: 0, sy: 0 })
   const panStartOffset = ref<{ ox: number; oy: number }>({ ox: 0, oy: 0 })
   const spaceHeld = ref(false)
+
+  // marquee selection state
+  const isMarquee = ref(false)
+  const marqueeStart = ref<{ sx: number; sy: number } | null>(null)
+  const marqueeImgStart = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
+  const marqueeImgEnd = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
 
   // clipboard
   const clipboard = ref<{ shape: ShapeType; width: number; height: number; name: string; origX: number; origY: number; points?: { x: number; y: number }[] } | null>(null)
@@ -351,6 +364,19 @@ export function useCanvasEngine(
     }))
   }
 
+  function hitTestGuide(sx: number, sy: number): { axis: 'h' | 'v'; value: number } | null {
+    const threshold = 6
+    for (const y of hGuides.value) {
+      const gy = (y - view.offsetY) * view.scale
+      if (Math.abs(sy - gy) < threshold) return { axis: 'h', value: y }
+    }
+    for (const x of vGuides.value) {
+      const gx = (x - view.offsetX) * view.scale
+      if (Math.abs(sx - gx) < threshold) return { axis: 'v', value: x }
+    }
+    return null
+  }
+
   function hitTestText(sx: number, sy: number): TextAnnotation | null {
     for (let i = textAnnotations.length - 1; i >= 0; i--) {
       const t = textAnnotations[i]
@@ -364,7 +390,8 @@ export function useCanvasEngine(
   }
 
   function hitTestLayer(sx: number, sy: number): ImageLayer | null {
-    for (let i = layers.value.length - 1; i >= 0; i--) {
+    // iterate front-to-back matching rendering order (layers[0] is topmost)
+    for (let i = 0; i < layers.value.length; i++) {
       const l = layers.value[i]
       if (!l.visible) continue
       const cx = (l.x + l.image.naturalWidth * l.scaleX / 2 - view.offsetX) * view.scale
@@ -381,6 +408,7 @@ export function useCanvasEngine(
   const isResizingLayer = ref(false)
   const layerResizeHandle = ref('')
   const dragStartLayerPos = ref<{ x: number; y: number; sx: number; sy: number; w: number; h: number }>({ x: 0, y: 0, sx: 1, sy: 1, w: 0, h: 0 })
+  const pendingCtrlDragLayer = ref<{ x: number; y: number; sx: number; sy: number } | null>(null)
 
   // --- brush/eraser ---
 
@@ -478,8 +506,16 @@ export function useCanvasEngine(
       return
     }
 
-    // right-click on vertex → delete
+    // right-click on vertex → delete; Ctrl+right-click on guide → delete guide
     if (e.button === 2) {
+      if (e.ctrlKey || e.metaKey) {
+        const ghit = hitTestGuide(sx, sy)
+        if (ghit) {
+          if (ghit.axis === 'h' && removeHGuide) removeHGuide(ghit.value)
+          else if (ghit.axis === 'v' && removeVGuide) removeVGuide(ghit.value)
+          return
+        }
+      }
       const vhit = hitTestVertex(sx, sy)
       if (vhit) {
         snapshot?.()
@@ -489,6 +525,79 @@ export function useCanvasEngine(
     }
 
     if (e.button !== 0) return
+
+    // Shift+click → pending marquee (activates on drag >3px)
+    if (e.shiftKey) {
+      marqueeStart.value = { sx, sy }
+      const img = screenToImage(e.clientX, e.clientY)
+      marqueeImgStart.value = { ix: img.ix, iy: img.iy }
+      marqueeImgEnd.value = { ix: img.ix, iy: img.iy }
+      return
+    }
+
+    // Ctrl+click in non-select mode:
+    //   on layer → activate + drag (pending, activates on move >3px)
+    if ((e.ctrlKey || e.metaKey) && activeTool.value !== 'select') {
+      const hitL2 = hitTestLayer(sx, sy)
+      if (hitL2) {
+        activeLayerId.value = hitL2.id
+        pendingCtrlDragLayer.value = { x: hitL2.x, y: hitL2.y, sx, sy }
+        return
+      }
+    }
+
+    // in non-select mode, clicking a region/text/control-point takes priority over the tool
+    if (activeTool.value !== 'select') {
+      const cp = hitTestControlPoint(sx, sy)
+      if (cp) {
+        // resize / move via control points
+        if (cp.isText) {
+          selectText(cp.id)
+          isDragging.value = true
+          draggingText.value = true
+        } else {
+          selectRegion(cp.id)
+          isDragging.value = true
+          draggingText.value = false
+        }
+        dragType.value = cp.type
+        const obj = cp.isText
+          ? textAnnotations.find(t => t.id === cp.id)
+          : regions.find(r => r.id === cp.id)
+        if (obj) {
+          dragStartBounds.value = { x: obj.x, y: obj.y, width: obj.width, height: obj.height }
+          if (!cp.isText) {
+            const r = obj as CropRegion
+            dragStartPoints.value = r.points ? r.points.map(p => ({ ...p })) : null
+          }
+        }
+        dragStartMouse.value = { sx, sy }
+        return
+      }
+      const hitR2 = hitTestRegion(sx, sy)
+      if (hitR2) {
+        snapshot?.()
+        selectRegion(hitR2.id)
+        isDragging.value = true
+        draggingText.value = false
+        dragType.value = 'move'
+        dragStartBounds.value = { x: hitR2.x, y: hitR2.y, width: hitR2.width, height: hitR2.height }
+        dragStartPoints.value = hitR2.points ? hitR2.points.map(p => ({ ...p })) : null
+        dragStartMultiBounds.value = null
+        dragStartMouse.value = { sx, sy }
+        return
+      }
+      const hitT2 = hitTestText(sx, sy)
+      if (hitT2) {
+        selectText(hitT2.id)
+        isDragging.value = true
+        draggingText.value = true
+        dragType.value = 'move'
+        dragStartBounds.value = { x: hitT2.x, y: hitT2.y, width: hitT2.width, height: hitT2.height }
+        dragStartMouse.value = { sx, sy }
+        return
+      }
+    }
 
     // brush / eraser
     if (activeTool.value === 'brush' || activeTool.value === 'eraser') {
@@ -616,6 +725,10 @@ export function useCanvasEngine(
     // check region hit
     const hit = hitTestRegion(sx, sy)
     if (hit && activeTool.value === 'select') {
+      // Normal click → select region and start drag; clear multi-set if clicking outside
+      if (!selectedRegionIds.value.has(hit.id)) {
+        selectedRegionIds.value = new Set()
+      }
       snapshot?.()
       selectRegion(hit.id)
       isDragging.value = true
@@ -623,6 +736,7 @@ export function useCanvasEngine(
       dragType.value = 'move'
       dragStartBounds.value = { x: hit.x, y: hit.y, width: hit.width, height: hit.height }
       dragStartPoints.value = hit.points ? hit.points.map(p => ({ ...p })) : null
+      dragStartMultiBounds.value = null
       dragStartMouse.value = { sx, sy }
       return
     }
@@ -682,6 +796,7 @@ export function useCanvasEngine(
 
     // click on empty area
     if (activeTool.value === 'select') {
+      selectedRegionIds.value = new Set()
       selectRegion(null)
       selectText(null)
     } else {
@@ -715,6 +830,21 @@ export function useCanvasEngine(
       return
     }
 
+    // marquee selection
+    if (marqueeStart.value) {
+      if (!isMarquee.value) {
+        if (Math.abs(sx - marqueeStart.value.sx) > 3 || Math.abs(sy - marqueeStart.value.sy) > 3) {
+          isMarquee.value = true
+        } else {
+          return
+        }
+      }
+      const img = screenToImage(e.clientX, e.clientY)
+      marqueeImgEnd.value = { ix: img.ix, iy: img.iy }
+      markDirty()
+      return
+    }
+
     if (isBrushing.value) {
       const img = screenToImage(e.clientX, e.clientY)
       if (lastBrushPos.value) {
@@ -733,6 +863,21 @@ export function useCanvasEngine(
       drawCurrentY.value = img.iy
       markDirty()
       return
+    }
+
+    // Ctrl+click → drag: activate when mouse moves past threshold
+    if (pendingCtrlDragLayer.value) {
+      const p = pendingCtrlDragLayer.value
+      if (Math.abs(sx - p.sx) > 3 || Math.abs(sy - p.sy) > 3) {
+        snapshot?.()
+        isDraggingLayer.value = true
+        dragStartLayerPos.value = { x: p.x, y: p.y, sx: 1, sy: 1, w: 0, h: 0 }
+        dragStartMouse.value = { sx: p.sx, sy: p.sy }
+        pendingCtrlDragLayer.value = null
+        // fall through to layer dragging below
+      } else {
+        return
+      }
     }
 
     // layer dragging
@@ -815,6 +960,38 @@ export function useCanvasEngine(
       if (draggingText.value) {
         const t = textAnnotations.find(t => t.id === (selectedTextId.value))
         if (t) { t.x = clamped.x; t.y = clamped.y; t.width = clamped.width; t.height = clamped.height }
+      } else if (dt === 'move' && selectedRegionIds.value.size > 0 && selectedRegionIds.value.has(selectedRegionId.value!)) {
+        // multi-region drag: lazy-init start bounds, then apply delta to all
+        if (!dragStartMultiBounds.value) {
+          const map = new Map<string, { x: number; y: number; width: number; height: number; points?: { x: number; y: number }[] }>()
+          for (const id of selectedRegionIds.value) {
+            const rr = regions.find(rr => rr.id === id)
+            if (rr) {
+              map.set(id, {
+                x: rr.x, y: rr.y, width: rr.width, height: rr.height,
+                points: rr.points ? rr.points.map(p => ({ ...p })) : undefined,
+              })
+            }
+          }
+          dragStartMultiBounds.value = map
+        }
+        const dx = clamped.x - orig.x
+        const dy = clamped.y - orig.y
+        for (const id of selectedRegionIds.value) {
+          const rr = regions.find(rr => rr.id === id)
+          const start = dragStartMultiBounds.value.get(id)
+          if (!rr || !start) continue
+          rr.x = start.x + dx
+          rr.y = start.y + dy
+          rr.width = start.width
+          rr.height = start.height
+          if (rr.points && start.points) {
+            for (let i = 0; i < rr.points.length; i++) {
+              rr.points[i].x = start.points[i].x + dx
+              rr.points[i].y = start.points[i].y + dy
+            }
+          }
+        }
       } else {
         const r = regions.find(r => r.id === selectedRegionId.value)
         if (r) {
@@ -859,6 +1036,52 @@ export function useCanvasEngine(
 
   function handleMouseUp(_e: MouseEvent) {
     if (isPanning.value) { isPanning.value = false; return }
+
+    // marquee finalize
+    if (isMarquee.value) {
+      isMarquee.value = false
+      marqueeStart.value = null
+      // select all regions whose center is inside the marquee rect
+      const mx = Math.min(marqueeImgStart.value.ix, marqueeImgEnd.value.ix)
+      const my = Math.min(marqueeImgStart.value.iy, marqueeImgEnd.value.iy)
+      const mw = Math.abs(marqueeImgEnd.value.ix - marqueeImgStart.value.ix)
+      const mh = Math.abs(marqueeImgEnd.value.iy - marqueeImgStart.value.iy)
+      const newSet = new Set(selectedRegionIds.value)
+      for (const r of regions) {
+        const rcx = r.x + r.width / 2
+        const rcy = r.y + r.height / 2
+        if (rcx >= mx && rcx <= mx + mw && rcy >= my && rcy <= my + mh) {
+          newSet.add(r.id)
+        }
+      }
+      selectedRegionIds.value = newSet
+      if (newSet.size > 0) selectedRegionId.value = [...newSet][0]
+      markDirty()
+      return
+    }
+    // pending marquee that never activated → toggle region under cursor
+    if (marqueeStart.value) {
+      marqueeStart.value = null
+      const canvas = canvasRef.value!
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const sx = (_e.clientX - rect.left) * dpr
+      const sy = (_e.clientY - rect.top) * dpr
+      const hit = hitTestRegion(sx, sy)
+      if (hit) {
+        const newSet = new Set(selectedRegionIds.value)
+        if (newSet.has(hit.id)) { newSet.delete(hit.id) } else { newSet.add(hit.id) }
+        selectedRegionIds.value = newSet
+        selectRegion(hit.id)
+      }
+      return
+    }
+
+    // clean up pending ctrl+drag (was just a click, no drag)
+    if (pendingCtrlDragLayer.value) {
+      pendingCtrlDragLayer.value = null
+      return
+    }
 
     if (isBrushing.value) {
       isBrushing.value = false
@@ -916,6 +1139,7 @@ export function useCanvasEngine(
       dragType.value = null
       dragStartBounds.value = null
       dragStartPoints.value = null
+      dragStartMultiBounds.value = null
       markDirty()
       return
     }
@@ -940,19 +1164,7 @@ export function useCanvasEngine(
   function handleContextMenu(e: Event) { e.preventDefault() }
 
   function handleDoubleClick(_e: MouseEvent) {
-    // Ctrl+double-click: switch to layer under cursor (works in any tool mode)
-    if (_e.ctrlKey) {
-      const canvas = canvasRef.value!
-      const rect = canvas.getBoundingClientRect()
-      const dpr = window.devicePixelRatio || 1
-      const sx = (_e.clientX - rect.left) * dpr
-      const sy = (_e.clientY - rect.top) * dpr
-      const hitL = hitTestLayer(sx, sy)
-      if (hitL) {
-        activeLayerId.value = hitL.id
-      }
-      return
-    }
+    if (_e.ctrlKey) return // Ctrl+click already handles layer switch + drag
 
     if (activeTool.value === 'custom' && customPoints.value.length >= 3) {
       finalizeCustomPolygon()
@@ -1112,7 +1324,7 @@ export function useCanvasEngine(
       }
     }
 
-    // draw all visible layers (reverse: first in list = top)
+    // draw all visible layers (layers[0] = top of sidebar = top of canvas)
     const visibleLayers = layers.value.filter(l => l.visible).reverse()
     for (const layer of visibleLayers) {
       const img = layer.image
@@ -1128,30 +1340,96 @@ export function useCanvasEngine(
         ctx.drawImage(layer.workingCanvas, ldx, ldy, ldw, ldh)
       }
 
-      // selection outline for active layer
-      if (layer.id === activeLayerId.value && layers.value.length > 1) {
-        ctx.save()
-        ctx.strokeStyle = '#4fc3f7'
-        ctx.lineWidth = 2
-        ctx.setLineDash([5, 3])
-        ctx.strokeRect(ldx, ldy, ldw, ldh)
-        ctx.setLineDash([])
-        // resize handles
-        const hs = 6
-        ctx.fillStyle = '#4fc3f7'
-        ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 1
-        const corners = [
-          [ldx, ldy], [ldx + ldw, ldy], [ldx, ldy + ldh], [ldx + ldw, ldy + ldh],
-          [ldx + ldw / 2, ldy], [ldx + ldw / 2, ldy + ldh],
-          [ldx, ldy + ldh / 2], [ldx + ldw, ldy + ldh / 2],
-        ]
-        for (const [cx, cy] of corners) {
-          ctx.fillRect(cx - hs, cy - hs, hs * 2, hs * 2)
-          ctx.strokeRect(cx - hs, cy - hs, hs * 2, hs * 2)
-        }
-        ctx.restore()
+      // layer name label at top-left
+      ctx.save()
+      ctx.font = '11px sans-serif'
+      const labelW = ctx.measureText(layer.name).width + 12
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'
+      ctx.fillRect(ldx, ldy, labelW, 20)
+      ctx.fillStyle = '#fff'
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(layer.name, ldx + 6, ldy + 10)
+      ctx.restore()
+    }
+
+    // active layer outline + handles — drawn after all layers so always visible
+    const al = getActiveLayer()
+    if (al && al.visible && layers.value.length > 1) {
+      const natW = al.image.naturalWidth * al.scaleX, natH = al.image.naturalHeight * al.scaleY
+      const ldx = (al.x - view.offsetX) * view.scale
+      const ldy = (al.y - view.offsetY) * view.scale
+      const ldw = natW * view.scale
+      const ldh = natH * view.scale
+      ctx.save()
+      ctx.strokeStyle = '#4fc3f7'
+      ctx.lineWidth = 2.5
+      ctx.setLineDash([5, 3])
+      ctx.strokeRect(ldx, ldy, ldw, ldh)
+      ctx.setLineDash([])
+      const hs = 6
+      ctx.fillStyle = '#4fc3f7'
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 1
+      const corners = [
+        [ldx, ldy], [ldx + ldw, ldy], [ldx, ldy + ldh], [ldx + ldw, ldy + ldh],
+        [ldx + ldw / 2, ldy], [ldx + ldw / 2, ldy + ldh],
+        [ldx, ldy + ldh / 2], [ldx + ldw, ldy + ldh / 2],
+      ]
+      for (const [cx, cy] of corners) {
+        ctx.fillRect(cx - hs, cy - hs, hs * 2, hs * 2)
+        ctx.strokeRect(cx - hs, cy - hs, hs * 2, hs * 2)
       }
+      ctx.restore()
+    }
+
+    // --- guide lines ---
+    for (const y of hGuides.value) {
+      const gy = (y - view.offsetY) * view.scale
+      ctx.save()
+      ctx.strokeStyle = '#00e5ff'
+      ctx.lineWidth = 1
+      ctx.setLineDash([6, 4])
+      ctx.beginPath()
+      ctx.moveTo(0, gy)
+      ctx.lineTo(canvas.width, gy)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.restore()
+    }
+    for (const x of vGuides.value) {
+      const gx = (x - view.offsetX) * view.scale
+      ctx.save()
+      ctx.strokeStyle = '#00e5ff'
+      ctx.lineWidth = 1
+      ctx.setLineDash([6, 4])
+      ctx.beginPath()
+      ctx.moveTo(gx, 0)
+      ctx.lineTo(gx, canvas.height)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.restore()
+    }
+
+    // --- marquee rectangle ---
+    if (isMarquee.value) {
+      const mx = Math.min(marqueeImgStart.value.ix, marqueeImgEnd.value.ix)
+      const my = Math.min(marqueeImgStart.value.iy, marqueeImgEnd.value.iy)
+      const mw = Math.abs(marqueeImgEnd.value.ix - marqueeImgStart.value.ix)
+      const mh = Math.abs(marqueeImgEnd.value.iy - marqueeImgStart.value.iy)
+      const sx = (mx - view.offsetX) * view.scale
+      const sy = (my - view.offsetY) * view.scale
+      const sw = mw * view.scale
+      const sh = mh * view.scale
+      ctx.save()
+      ctx.fillStyle = 'rgba(79,195,247,0.08)'
+      ctx.fillRect(sx, sy, sw, sh)
+      ctx.strokeStyle = '#4fc3f7'
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 4])
+      ctx.strokeRect(sx, sy, sw, sh)
+      ctx.setLineDash([])
+      ctx.restore()
     }
 
     // dark overlay with region cutouts — covers full canvas
@@ -1174,6 +1452,8 @@ export function useCanvasEngine(
     // region overlays
     for (const r of regions) {
       const isSelected = r.id === selectedRegionId.value
+      const isMultiSelected = !isSelected && selectedRegionIds.value.has(r.id)
+      const primary = isSelected || isMultiSelected
       const rcx = (r.x + r.width / 2 - view.offsetX) * view.scale
       const rcy = (r.y + r.height / 2 - view.offsetY) * view.scale
       const rw = r.width * view.scale
@@ -1182,28 +1462,28 @@ export function useCanvasEngine(
       ctx.save()
       ctx.shadowColor = 'rgba(0,0,0,0.3)'
       ctx.shadowBlur = 6
-      ctx.strokeStyle = isSelected ? '#4fc3f7' : 'rgba(255,255,255,0.7)'
-      ctx.lineWidth = isSelected ? 2.5 : 1.5
+      ctx.strokeStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : 'rgba(255,255,255,0.7)'
+      ctx.lineWidth = isSelected ? 2.5 : isMultiSelected ? 1.8 : 1.5
       drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r))
       ctx.stroke()
       ctx.restore()
 
       ctx.save()
-      ctx.fillStyle = isSelected ? 'rgba(79,195,247,0.12)' : 'rgba(255,255,255,0.06)'
-      // subtle shadow behind each region
+      ctx.fillStyle = isSelected ? 'rgba(79,195,247,0.12)' : isMultiSelected ? 'rgba(111,200,247,0.08)' : 'rgba(255,255,255,0.06)'
       ctx.shadowColor = 'rgba(0,0,0,0.25)'
-      ctx.shadowBlur = isSelected ? 10 : 4
+      ctx.shadowBlur = primary ? 8 : 4
       drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r))
       ctx.fill()
       ctx.restore()
 
       const lx = rcx - rw / 2
       const ly = rcy - rh / 2 - 6
-      ctx.fillStyle = isSelected ? '#4fc3f7' : '#ddd'
+      ctx.fillStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : '#ddd'
       ctx.font = '11px sans-serif'
       ctx.textAlign = 'left'
       ctx.fillText(r.name, lx, Math.max(ly, 14))
 
+      // only draw control points for primary selected region
       if (isSelected) {
         const pts = getControlPoints(r.x, r.y, r.width, r.height, view)
         for (const pt of pts) {
@@ -1400,6 +1680,7 @@ export function useCanvasEngine(
   watch(magicWandTolerance, () => markDirty())
   watch(layers, () => markDirty(), { deep: true })
   watch(activeLayerId, () => markDirty())
+  watch(canvasVersion, () => markDirty())
 
   // --- init ---
 

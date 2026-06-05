@@ -11,14 +11,16 @@ const editor = useEditorStore()
 const history = useHistoryStore()
 const canvasWorkspace = ref<InstanceType<typeof CanvasWorkspace> | null>(null)
 
-function handleUploadImage(file: File) {
-  const reader = new FileReader()
-  reader.onload = (ev) => {
-    const img = new Image()
-    img.onload = () => editor.addLayer(img)
-    img.src = ev.target?.result as string
+function handleUploadImage(files: File[]) {
+  for (const file of files) {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const img = new Image()
+      img.onload = () => editor.addLayer(img)
+      img.src = ev.target?.result as string
+    }
+    reader.readAsDataURL(file)
   }
-  reader.readAsDataURL(file)
 }
 
 function handleKeyDown(e: KeyboardEvent) {
@@ -32,11 +34,21 @@ function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape') { canvasWorkspace.value?.cancelCustomPolygon() }
   if (e.key === 'Enter' && !isInput) { canvasWorkspace.value?.finalizeCustomPolygon?.() }
   if ((e.key === 'Delete' || e.key === 'Backspace') && !isInput) {
-    const sel = editor.selectedRegionId
-    if (sel) canvasWorkspace.value?.deleteRegion(sel)
+    // batch delete if multi-select has items
+    if (editor.selectedRegionIds.size > 0) {
+      history.snapshot()
+      const ids = [...editor.selectedRegionIds]
+      for (const id of ids) {
+        editor.deleteRegion(id)
+      }
+      canvasWorkspace.value?.scheduleRender()
+    } else {
+      const sel = editor.selectedRegionId
+      if (sel) canvasWorkspace.value?.deleteRegion(sel)
+    }
   }
   // arrow key nudge
-  if (!isInput && editor.selectedRegionId) {
+  if (!isInput && (editor.selectedRegionId || editor.selectedRegionIds.size > 0)) {
     const step = e.shiftKey ? 10 : 1
     let dx = 0, dy = 0
     if (e.key === 'ArrowLeft') dx = -step
@@ -45,15 +57,28 @@ function handleKeyDown(e: KeyboardEvent) {
     else if (e.key === 'ArrowDown') dy = step
     if (dx !== 0 || dy !== 0) {
       e.preventDefault()
-      const r = editor.regions.find(r => r.id === editor.selectedRegionId)
-      if (r) {
-        history.snapshot()
-        r.x += dx; r.y += dy
-        if (r.points) {
-          for (const p of r.points) { p.x += dx; p.y += dy }
+      history.snapshot()
+      // multi-select nudge
+      if (editor.selectedRegionIds.size > 0) {
+        for (const id of editor.selectedRegionIds) {
+          const r = editor.regions.find(r => r.id === id)
+          if (r) {
+            r.x += dx; r.y += dy
+            if (r.points) {
+              for (const p of r.points) { p.x += dx; p.y += dy }
+            }
+          }
         }
-        canvasWorkspace.value?.scheduleRender()
+      } else {
+        const r = editor.regions.find(r => r.id === editor.selectedRegionId)
+        if (r) {
+          r.x += dx; r.y += dy
+          if (r.points) {
+            for (const p of r.points) { p.x += dx; p.y += dy }
+          }
+        }
       }
+      canvasWorkspace.value?.scheduleRender()
     }
   }
 }

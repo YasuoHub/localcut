@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { ImageFormat } from '../types'
+import type { ImageFormat, BatchOutputFitMode } from '../types'
 
 export const useExportStore = defineStore('export', () => {
   const exportFormat = ref<ImageFormat>('png')
@@ -11,10 +11,31 @@ export const useExportStore = defineStore('export', () => {
   const exportDpr = ref(2)
   const customOutputSize = ref(false)
 
+  // batch export
+  const batchUseCustomSize = ref(false)
+  const batchOutputWidth = ref<number | null>(800)
+  const batchOutputHeight = ref<number | null>(800)
+  const batchFitMode = ref<BatchOutputFitMode>('cover')
+  const batchFillColor = ref('#ffffff')
+
+  // naming
+  const filenamePattern = ref('{imageName}_{regionName}_{index:3}')
+  const selectedPlatformPresetId = ref<string | null>(null)
+
+  function applyPlatformPreset(width: number, height: number) {
+    batchUseCustomSize.value = true
+    batchOutputWidth.value = width
+    batchOutputHeight.value = height
+  }
+
   return {
     exportFormat, exportQuality,
     exportOutputWidth, exportOutputHeight,
     exportLockAspect, exportDpr,
     customOutputSize,
+    batchUseCustomSize, batchOutputWidth, batchOutputHeight,
+    batchFitMode, batchFillColor,
+    filenamePattern, selectedPlatformPresetId,
+    applyPlatformPreset,
   }
 })

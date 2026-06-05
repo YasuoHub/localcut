@@ -5,7 +5,7 @@ import { useEditorStore } from '../stores/editor'
 
 const editor = useEditorStore()
 
-const emit = defineEmits<{ 'upload-image': [file: File] }>()
+const emit = defineEmits<{ 'upload-image': [files: File[]] }>()
 
 const tools: { id: ToolType; label: string; icon: string }[] = [
   { id: 'select', label: '选择', icon: '⊟' },
@@ -31,9 +31,9 @@ const fileInput = ref<HTMLInputElement | null>(null)
 function triggerUpload() { fileInput.value?.click() }
 function handleFileChange(e: Event) {
   const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  emit('upload-image', file)
+  const files = input.files
+  if (!files || files.length === 0) return
+  emit('upload-image', Array.from(files))
   input.value = ''
 }
 </script>
@@ -42,7 +42,7 @@ function handleFileChange(e: Event) {
   <aside class="sidebar scrollbar">
     <section class="section">
       <button class="btn-ghost upload-btn" @click="triggerUpload">上传图片</button>
-      <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" style="display:none" @change="handleFileChange" />
+      <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple style="display:none" @change="handleFileChange" />
       <span v-if="editor.imageLoaded" class="status-ok">已就绪</span>
     </section>
 
