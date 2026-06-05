@@ -20,7 +20,7 @@ const {
   textAnnotations, selectedTextId,
   constrainToImage, magicWandTolerance, showOriginal,
   layers, activeLayerId, canvasVersion,
-  hGuides, vGuides,
+  hGuides, vGuides, selectedLayerIds,
 } = storeToRefs(editor)
 
 const engine = useCanvasEngine(
@@ -35,6 +35,7 @@ const engine = useCanvasEngine(
   layers, activeLayerId,
   canvasVersion,
   hGuides, vGuides,
+  selectedLayerIds,
   editor.removeHGuide, editor.removeVGuide,
   history.snapshot,
 )

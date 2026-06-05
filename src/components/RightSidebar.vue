@@ -116,7 +116,7 @@ function updatePosition() {
 
 // ---- text editing (component-local form state) ----
 const editText = ref('')
-const editFontSize = ref(24)
+const editFontSize = ref(44)
 const editFontColor = ref('#ffffff')
 const editFontWeight = ref<'normal' | 'bold'>('bold')
 
@@ -141,6 +141,12 @@ function updateText() {
   editor.selectedText.fontSize = editFontSize.value
   editor.selectedText.fontColor = editFontColor.value
   editor.selectedText.fontWeight = editFontWeight.value
+}
+
+function onFontColorInput() {
+  if (!editor.selectedText) return
+  editor.selectedText.fontColor = editFontColor.value
+  editor.invalidateCanvas()
 }
 
 // ---- single export ----
@@ -227,6 +233,27 @@ const exporting = ref(false)
 const renamingId = ref<string | null>(null)
 const renameValue = ref('')
 
+// layer drag state
+const dragOverIdx = ref(-1)
+
+function onLayerDragStart(e: DragEvent, idx: number) {
+  if (!e.dataTransfer) return
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', String(idx))
+}
+
+function onLayerDragLeave(idx: number) {
+  if (dragOverIdx.value === idx) dragOverIdx.value = -1
+}
+
+function onLayerDrop(e: DragEvent, toIdx: number) {
+  dragOverIdx.value = -1
+  const fromIdx = parseInt(e.dataTransfer?.getData('text/plain') ?? '')
+  if (isNaN(fromIdx)) return
+  history.snapshot()
+  editor.moveLayer(fromIdx, toIdx)
+}
+
 async function handleBatchExport() {
   if (!editor.imageLoaded || editor.regions.length === 0) return
   const toExport = checkedRegions()
@@ -264,14 +291,26 @@ async function handleBatchExport() {
 
     <!-- Layer panel -->
     <section class="section" v-if="editor.layers.length > 0">
-      <div class="section-title">图层</div>
+      <div class="section-title">图层
+        <button class="clear-all-btn" title="清空图层" @click="history.snapshot(); editor.layers.splice(0); editor.activeLayerId = null">清空</button>
+      </div>
       <div class="layer-list scrollbar">
         <div
           v-for="(layer, idx) in editor.layers" :key="layer.id"
-          class="layer-item" :class="{ active: layer.id === editor.activeLayerId }"
+          class="layer-item"
+          :class="{
+            active: layer.id === editor.activeLayerId,
+            'drag-over': dragOverIdx === idx,
+          }"
+          draggable="true"
           @click="editor.setActiveLayer(layer.id)"
+          @dragstart="onLayerDragStart($event, idx)"
+          @dragover.prevent="dragOverIdx = idx"
+          @dragleave="onLayerDragLeave(idx)"
+          @drop="onLayerDrop($event, idx)"
         >
           <span class="layer-visibility" @click.stop="history.snapshot(); editor.toggleLayerVisible(layer.id)">{{ layer.visible ? '👁' : '—' }}</span>
+          <input type="checkbox" class="layer-check" :checked="editor.selectedLayerIds.has(layer.id)" @click.stop @change="editor.toggleLayerCheck(layer.id)" />
           <span class="layer-name" v-if="renamingId !== layer.id" @dblclick.stop="renamingId = layer.id; renameValue = layer.name">{{ layer.name }}</span>
           <input
             v-else
@@ -338,7 +377,7 @@ async function handleBatchExport() {
         <div class="field"><label>字号</label><input type="number" v-model.number="editFontSize" min="8" max="200" @change="updateText" /></div>
         <div class="field"><label>粗细</label><select v-model="editFontWeight" @change="updateText" class="select-input"><option value="normal">常规</option><option value="bold">粗体</option></select></div>
       </div>
-      <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @change="updateText" class="color-input" /></div>
+      <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @input="onFontColorInput" @change="updateText" class="color-input" /></div>
     </section>
 
     <!-- No selection -->
@@ -469,10 +508,13 @@ async function handleBatchExport() {
 .region-dims { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 
 .layer-list { display: flex; flex-direction: column; gap: 2px; max-height: 120px; overflow-y: auto; }
-.layer-item { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: var(--radius); cursor: pointer; font-size: 11px; }
+.layer-item { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: var(--radius); cursor: grab; font-size: 11px; }
+.layer-item:active { cursor: grabbing; }
 .layer-item:hover { background: var(--bg-hover); }
 .layer-item.active { background: rgba(79, 195, 247, 0.1); outline: 1px solid rgba(79, 195, 247, 0.3); }
+.layer-item.drag-over { border-top: 2px solid var(--accent); }
 .layer-visibility { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+.layer-check { flex-shrink: 0; accent-color: var(--accent); cursor: pointer; width: 13px; height: 13px; margin: 0; }
 .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-rename-input { flex: 1; background: var(--bg-primary); border: 1px solid var(--accent); border-radius: 3px; color: var(--text-primary); font-size: 11px; padding: 1px 4px; outline: none; min-width: 0; }
 .layer-order-btns { display: flex; flex-shrink: 0; }

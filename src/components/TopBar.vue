@@ -19,6 +19,20 @@ const showSettings = ref(false)
         <div class="popover-panel" @click.stop>
           <div class="popover-title">系统设置</div>
           <label class="setting-item"><input type="checkbox" v-model="editor.constrainToImage" />限制裁剪框在图片内</label>
+          <div class="setting-divider"></div>
+          <div class="setting-label">导入图层排列</div>
+          <div class="setting-row">
+            <select v-model="editor.layerArrangeDirection" class="setting-select">
+              <option value="horizontal">从左到右</option>
+              <option value="vertical">从上到下</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label class="setting-inline"><span>间距</span>
+              <input type="number" v-model.number="editor.layerArrangeGap" min="0" class="setting-num" />
+              <span>px</span>
+            </label>
+          </div>
         </div>
       </div>
       <div v-if="showShortcuts" class="popover-overlay" @click="showShortcuts = false">
@@ -28,9 +42,12 @@ const showSettings = ref(false)
           <div class="shortcut-item"><kbd>Ctrl+Y</kbd> 重做</div>
           <div class="shortcut-item"><kbd>Ctrl+C</kbd> 复制选中区域</div>
           <div class="shortcut-item"><kbd>Ctrl+V</kbd> 粘贴区域</div>
-          <div class="shortcut-item"><kbd>Shift+点击</kbd> 多选/取消多选</div>
-          <div class="shortcut-item"><kbd>Shift+拖拽</kbd> 框选多个区域</div>
+          <div class="shortcut-item"><kbd>Shift+点击</kbd> 增减选中区域</div>
+          <div class="shortcut-item"><kbd>Shift+拖拽</kbd> 框选区域(替换)</div>
           <div class="shortcut-item"><kbd>Ctrl+拖拽</kbd> 拖动图层/区域(非选择模式)</div>
+          <div class="shortcut-item"><kbd>Ctrl+点击区域</kbd> 增减选中区域</div>
+          <div class="shortcut-item"><kbd>Ctrl+Shift+点击</kbd> 增减选中图层</div>
+          <div class="shortcut-item"><kbd>Ctrl+Shift+拖拽</kbd> 框选图层(替换)</div>
           <div class="shortcut-item"><kbd>Delete</kbd> 删除选中(支持批量)</div>
           <div class="shortcut-item"><kbd>方向键</kbd> 微移选中(支持批量)</div>
           <div class="shortcut-item"><kbd>Shift+方向键</kbd> 快速微移</div>
@@ -60,6 +77,20 @@ const showSettings = ref(false)
 .popover-title { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
 .setting-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); cursor: pointer; margin-bottom: 4px; }
 .setting-item input { accent-color: var(--accent); }
+.setting-divider { border-top: 1px solid var(--border); margin: 8px 0; }
+.setting-label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+.setting-row { margin-bottom: 6px; }
+.setting-select {
+  width: 100%; background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: 3px; padding: 4px 6px; color: var(--text-primary); font-size: 11px; outline: none;
+}
+.setting-select:focus { border-color: var(--accent); }
+.setting-inline { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+.setting-num {
+  width: 50px; background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: 3px; padding: 2px 4px; color: var(--text-primary); font-size: 11px; outline: none; text-align: center;
+}
+.setting-num:focus { border-color: var(--accent); }
 .shortcut-item { font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
 .shortcut-item kbd { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-size: 10px; font-family: inherit; min-width: 48px; text-align: center; }
 </style>

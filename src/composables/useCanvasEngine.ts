@@ -54,6 +54,7 @@ export function useCanvasEngine(
   canvasVersion: Ref<number>,
   hGuides: Ref<number[]>,
   vGuides: Ref<number[]>,
+  selectedLayerIds: Ref<Set<string>>,
   removeHGuide?: (y: number) => void,
   removeVGuide?: (x: number) => void,
   snapshot?: () => void,
@@ -121,6 +122,13 @@ export function useCanvasEngine(
   const marqueeImgStart = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
   const marqueeImgEnd = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
 
+  // layer marquee state (Ctrl+Shift)
+  const isLayerMarquee = ref(false)
+  const layerMarqueeStart = ref<{ sx: number; sy: number } | null>(null)
+  const layerMarqueeImgStart = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
+  const layerMarqueeImgEnd = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
+  const layerDragStartPositions = ref<Map<string, { x: number; y: number }> | null>(null)
+
   // clipboard
   const clipboard = ref<{ shape: ShapeType; width: number; height: number; name: string; origX: number; origY: number; points?: { x: number; y: number }[] } | null>(null)
   const pasteCount = ref(0)
@@ -166,8 +174,8 @@ export function useCanvasEngine(
     const scaleX = cw / img.naturalWidth
     const scaleY = ch / img.naturalHeight
     view.scale = Math.min(scaleX, scaleY) * 0.85
-    view.offsetX = (img.naturalWidth - cw / view.scale) / 2
-    view.offsetY = (img.naturalHeight - ch / view.scale) / 2
+    view.offsetX = -30
+    view.offsetY = -30
     markDirty()
   }
 
@@ -528,6 +536,14 @@ export function useCanvasEngine(
 
     // Shift+click → pending marquee (activates on drag >3px)
     if (e.shiftKey) {
+      // Ctrl+Shift → layer marquee; Shift only → region marquee
+      if (e.ctrlKey || e.metaKey) {
+        layerMarqueeStart.value = { sx, sy }
+        const img = screenToImage(e.clientX, e.clientY)
+        layerMarqueeImgStart.value = { ix: img.ix, iy: img.iy }
+        layerMarqueeImgEnd.value = { ix: img.ix, iy: img.iy }
+        return
+      }
       marqueeStart.value = { sx, sy }
       const img = screenToImage(e.clientX, e.clientY)
       marqueeImgStart.value = { ix: img.ix, iy: img.iy }
@@ -576,6 +592,10 @@ export function useCanvasEngine(
       }
       const hitR2 = hitTestRegion(sx, sy)
       if (hitR2) {
+        // clear region multi-set if clicking outside the set
+        if (!selectedRegionIds.value.has(hitR2.id)) {
+          selectedRegionIds.value = new Set()
+        }
         snapshot?.()
         selectRegion(hitR2.id)
         isDragging.value = true
@@ -597,6 +617,12 @@ export function useCanvasEngine(
         dragStartMouse.value = { sx, sy }
         return
       }
+    }
+
+    // in non-select mode, no region/text hit → clear multi-select before tool action
+    if (activeTool.value !== 'select') {
+      selectedRegionIds.value = new Set()
+      selectedLayerIds.value = new Set()
     }
 
     // brush / eraser
@@ -663,8 +689,8 @@ export function useCanvasEngine(
         id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         text: '',
         x: img.ix, y: img.iy,
-        width: 180, height: 40,
-        fontSize: 24, fontColor: '#ffffff', fontWeight: 'bold',
+        width: 300, height: 60,
+        fontSize: 44, fontColor: '#ffffff', fontWeight: 'bold',
       }
       textAnnotations.push(ta)
       selectText(ta.id)
@@ -725,9 +751,16 @@ export function useCanvasEngine(
     // check region hit
     const hit = hitTestRegion(sx, sy)
     if (hit && activeTool.value === 'select') {
-      // Normal click → select region and start drag; clear multi-set if clicking outside
-      if (!selectedRegionIds.value.has(hit.id)) {
-        selectedRegionIds.value = new Set()
+      if (e.ctrlKey || e.metaKey) {
+        // Ctrl+click → toggle region in multi-set, then start drag
+        const newSet = new Set(selectedRegionIds.value)
+        if (newSet.has(hit.id)) { newSet.delete(hit.id) } else { newSet.add(hit.id) }
+        selectedRegionIds.value = newSet
+      } else {
+        // Normal click → clear multi-set if clicking outside
+        if (!selectedRegionIds.value.has(hit.id)) {
+          selectedRegionIds.value = new Set()
+        }
       }
       snapshot?.()
       selectRegion(hit.id)
@@ -786,6 +819,10 @@ export function useCanvasEngine(
       return
     }
     if (hitL && activeTool.value === 'select' && !hit && !hitT2) {
+      // clear layer multi-set only if clicking outside the set
+      if (!selectedLayerIds.value.has(hitL.id)) {
+        selectedLayerIds.value = new Set()
+      }
       snapshot?.()
       activeLayerId.value = hitL.id
       isDraggingLayer.value = true
@@ -797,6 +834,7 @@ export function useCanvasEngine(
     // click on empty area
     if (activeTool.value === 'select') {
       selectedRegionIds.value = new Set()
+      selectedLayerIds.value = new Set()
       selectRegion(null)
       selectText(null)
     } else {
@@ -845,6 +883,21 @@ export function useCanvasEngine(
       return
     }
 
+    // layer marquee (Ctrl+Shift)
+    if (layerMarqueeStart.value) {
+      if (!isLayerMarquee.value) {
+        if (Math.abs(sx - layerMarqueeStart.value.sx) > 3 || Math.abs(sy - layerMarqueeStart.value.sy) > 3) {
+          isLayerMarquee.value = true
+        } else {
+          return
+        }
+      }
+      const img = screenToImage(e.clientX, e.clientY)
+      layerMarqueeImgEnd.value = { ix: img.ix, iy: img.iy }
+      markDirty()
+      return
+    }
+
     if (isBrushing.value) {
       const img = screenToImage(e.clientX, e.clientY)
       if (lastBrushPos.value) {
@@ -885,7 +938,23 @@ export function useCanvasEngine(
       const dx = (sx - dragStartMouse.value.sx) / view.scale
       const dy = (sy - dragStartMouse.value.sy) / view.scale
       const layer = getActiveLayer()
-      if (layer) {
+      if (!layer) return
+      // multi-layer drag
+      if (selectedLayerIds.value.size > 0 && selectedLayerIds.value.has(layer.id)) {
+        if (!layerDragStartPositions.value) {
+          const map = new Map<string, { x: number; y: number }>()
+          for (const id of selectedLayerIds.value) {
+            const l = layers.value.find(ll => ll.id === id)
+            if (l) map.set(id, { x: l.x, y: l.y })
+          }
+          layerDragStartPositions.value = map
+        }
+        for (const id of selectedLayerIds.value) {
+          const l = layers.value.find(ll => ll.id === id)
+          const start = layerDragStartPositions.value.get(id)
+          if (l && start) { l.x = start.x + dx; l.y = start.y + dy }
+        }
+      } else {
         layer.x = dragStartLayerPos.value.x + dx
         layer.y = dragStartLayerPos.value.y + dy
       }
@@ -1041,12 +1110,12 @@ export function useCanvasEngine(
     if (isMarquee.value) {
       isMarquee.value = false
       marqueeStart.value = null
-      // select all regions whose center is inside the marquee rect
+      // select all regions whose center is inside the marquee rect (replace)
       const mx = Math.min(marqueeImgStart.value.ix, marqueeImgEnd.value.ix)
       const my = Math.min(marqueeImgStart.value.iy, marqueeImgEnd.value.iy)
       const mw = Math.abs(marqueeImgEnd.value.ix - marqueeImgStart.value.ix)
       const mh = Math.abs(marqueeImgEnd.value.iy - marqueeImgStart.value.iy)
-      const newSet = new Set(selectedRegionIds.value)
+      const newSet = new Set<string>()
       for (const r of regions) {
         const rcx = r.x + r.width / 2
         const rcy = r.y + r.height / 2
@@ -1057,6 +1126,43 @@ export function useCanvasEngine(
       selectedRegionIds.value = newSet
       if (newSet.size > 0) selectedRegionId.value = [...newSet][0]
       markDirty()
+      return
+    }
+    // layer marquee finalize (Ctrl+Shift)
+    if (isLayerMarquee.value) {
+      isLayerMarquee.value = false
+      layerMarqueeStart.value = null
+      const mx = Math.min(layerMarqueeImgStart.value.ix, layerMarqueeImgEnd.value.ix)
+      const my = Math.min(layerMarqueeImgStart.value.iy, layerMarqueeImgEnd.value.iy)
+      const mw = Math.abs(layerMarqueeImgEnd.value.ix - layerMarqueeImgStart.value.ix)
+      const mh = Math.abs(layerMarqueeImgEnd.value.iy - layerMarqueeImgStart.value.iy)
+      const newSet = new Set<string>()
+      for (const l of layers.value) {
+        if (!l.visible) continue
+        const cx = l.x + l.image.naturalWidth * l.scaleX / 2
+        const cy = l.y + l.image.naturalHeight * l.scaleY / 2
+        if (cx >= mx && cx <= mx + mw && cy >= my && cy <= my + mh) {
+          newSet.add(l.id)
+        }
+      }
+      selectedLayerIds.value = newSet
+      markDirty()
+      return
+    }
+    // pending layer marquee that never activated → toggle layer under cursor
+    if (layerMarqueeStart.value) {
+      layerMarqueeStart.value = null
+      const canvas = canvasRef.value!
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const sx = (_e.clientX - rect.left) * dpr
+      const sy = (_e.clientY - rect.top) * dpr
+      const hitL = hitTestLayer(sx, sy)
+      if (hitL) {
+        const newSet = new Set(selectedLayerIds.value)
+        if (newSet.has(hitL.id)) { newSet.delete(hitL.id) } else { newSet.add(hitL.id) }
+        selectedLayerIds.value = newSet
+      }
       return
     }
     // pending marquee that never activated → toggle region under cursor
@@ -1091,6 +1197,7 @@ export function useCanvasEngine(
 
     if (isDraggingLayer.value) {
       isDraggingLayer.value = false
+      layerDragStartPositions.value = null
       markDirty()
       return
     }
@@ -1309,7 +1416,6 @@ export function useCanvasEngine(
       ctx.fillStyle = '#555'
       ctx.font = '14px sans-serif'
       ctx.textAlign = 'center'
-      ctx.fillText('拖拽图片到此处或点击上传按钮', canvas.width / 2, canvas.height / 2)
       return
     }
 
@@ -1351,6 +1457,17 @@ export function useCanvasEngine(
       ctx.textBaseline = 'middle'
       ctx.fillText(layer.name, ldx + 6, ldy + 10)
       ctx.restore()
+
+      // secondary outline for multi-selected layers (non-active)
+      if (layer.id !== activeLayerId.value && selectedLayerIds.value.has(layer.id)) {
+        ctx.save()
+        ctx.strokeStyle = '#00e5ff'
+        ctx.lineWidth = 1.5
+        ctx.setLineDash([4, 3])
+        ctx.strokeRect(ldx, ldy, ldw, ldh)
+        ctx.setLineDash([])
+        ctx.restore()
+      }
     }
 
     // active layer outline + handles — drawn after all layers so always visible
@@ -1425,6 +1542,27 @@ export function useCanvasEngine(
       ctx.fillStyle = 'rgba(79,195,247,0.08)'
       ctx.fillRect(sx, sy, sw, sh)
       ctx.strokeStyle = '#4fc3f7'
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 4])
+      ctx.strokeRect(sx, sy, sw, sh)
+      ctx.setLineDash([])
+      ctx.restore()
+    }
+
+    // --- layer marquee rectangle ---
+    if (isLayerMarquee.value) {
+      const mx = Math.min(layerMarqueeImgStart.value.ix, layerMarqueeImgEnd.value.ix)
+      const my = Math.min(layerMarqueeImgStart.value.iy, layerMarqueeImgEnd.value.iy)
+      const mw = Math.abs(layerMarqueeImgEnd.value.ix - layerMarqueeImgStart.value.ix)
+      const mh = Math.abs(layerMarqueeImgEnd.value.iy - layerMarqueeImgStart.value.iy)
+      const sx = (mx - view.offsetX) * view.scale
+      const sy = (my - view.offsetY) * view.scale
+      const sw = mw * view.scale
+      const sh = mh * view.scale
+      ctx.save()
+      ctx.fillStyle = 'rgba(0,229,255,0.08)'
+      ctx.fillRect(sx, sy, sw, sh)
+      ctx.strokeStyle = '#00e5ff'
       ctx.lineWidth = 1
       ctx.setLineDash([4, 4])
       ctx.strokeRect(sx, sy, sw, sh)
@@ -1512,6 +1650,7 @@ export function useCanvasEngine(
       ctx.clip()
       ctx.font = `${t.fontWeight} ${fs}px sans-serif`
       ctx.fillStyle = t.fontColor
+      ctx.textAlign = 'left'
       ctx.textBaseline = 'top'
 
       const chars = [...t.text]
@@ -1523,12 +1662,11 @@ export function useCanvasEngine(
           ctx.fillText(line, tx + 4 * view.scale, ly)
           line = ch
           ly += lineHeight
-          if (ly + lineHeight > ty + th) break
         } else {
           line = testLine
         }
       }
-      if (line && ly + lineHeight <= ty + th + 2) {
+      if (line) {
         ctx.fillText(line, tx + 4 * view.scale, ly)
       }
       ctx.restore()

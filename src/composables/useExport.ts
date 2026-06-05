@@ -83,6 +83,7 @@ export function useExport() {
         ctx.clip()
         ctx.font = `${t.fontWeight} ${fs}px sans-serif`
         ctx.fillStyle = t.fontColor
+        ctx.textAlign = 'left'
         ctx.textBaseline = 'top'
         ctx.beginPath(); ctx.rect(tx, ty, tw, th); ctx.clip()
         const chars = [...t.text]
@@ -91,10 +92,9 @@ export function useExport() {
           const test = line + ch
           if (ctx.measureText(test).width > maxWidth && line.length > 0) {
             ctx.fillText(line, tx + 2, ly); line = ch; ly += lineHeight
-            if (ly + lineHeight > ty + th) break
           } else { line = test }
         }
-        if (line && ly + lineHeight <= ty + th + 2) ctx.fillText(line, tx + 2, ly)
+        if (line) ctx.fillText(line, tx + 2, ly)
         ctx.restore()
       }
     }

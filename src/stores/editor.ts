@@ -17,16 +17,21 @@ export const useEditorStore = defineStore('editor', () => {
     wc.width = img.naturalWidth
     wc.height = img.naturalHeight
     wc.getContext('2d')!.drawImage(img, 0, 0)
-    const offset = layers.value.length * 30
     const layer: ImageLayer = {
       id, name: name || `图层 ${layers.value.length + 1}`,
       image: img,
       workingCanvas: wc,
-      x: offset, y: offset,
+      x: layerInsertX.value, y: layerInsertY.value,
       scaleX: 1, scaleY: 1,
       visible: true,
     }
     layers.value.push(layer)
+    // advance insert position
+    if (layerArrangeDirection.value === 'horizontal') {
+      layerInsertX.value += img.naturalWidth + layerArrangeGap.value
+    } else {
+      layerInsertY.value += img.naturalHeight + layerArrangeGap.value
+    }
     prevActiveLayerId.value = activeLayerId.value
     activeLayerId.value = id
     return layer
@@ -60,26 +65,29 @@ export const useEditorStore = defineStore('editor', () => {
     if (layer) layer.name = name
   }
 
+  function moveLayer(fromIdx: number, toIdx: number) {
+    if (fromIdx < 0 || fromIdx >= layers.value.length) return
+    if (toIdx < 0 || toIdx >= layers.value.length) return
+    if (fromIdx === toIdx) return
+    const [item] = layers.value.splice(fromIdx, 1)
+    layers.value.splice(toIdx, 0, item)
+  }
+
   function moveLayerUp(id: string) {
     const idx = layers.value.findIndex(l => l.id === id)
-    if (idx > 0) {
-      const [item] = layers.value.splice(idx, 1)
-      layers.value.splice(idx - 1, 0, item)
-    }
+    moveLayer(idx, idx - 1)
   }
 
   function moveLayerDown(id: string) {
     const idx = layers.value.findIndex(l => l.id === id)
-    if (idx < layers.value.length - 1) {
-      const [item] = layers.value.splice(idx, 1)
-      layers.value.splice(idx + 1, 0, item)
-    }
+    moveLayer(idx, idx + 1)
   }
 
   // ---- regions ----
   const regions = ref<CropRegion[]>([])
   const selectedRegionId = ref<string | null>(null)
   const selectedRegionIds = ref<Set<string>>(new Set())
+  const selectedLayerIds = ref<Set<string>>(new Set())
 
   const selectedRegion = computed<CropRegion | null>(() => {
     if (!selectedRegionId.value) return null
@@ -110,6 +118,15 @@ export const useEditorStore = defineStore('editor', () => {
     regions.value.splice(0)
     selectedRegionId.value = null
     selectedRegionIds.value = new Set()
+  }
+
+  function toggleLayerCheck(id: string) {
+    const newSet = new Set(selectedLayerIds.value)
+    if (newSet.has(id)) { newSet.delete(id) } else { newSet.add(id) }
+    selectedLayerIds.value = newSet
+  }
+  function clearSelectedLayers() {
+    selectedLayerIds.value = new Set()
   }
 
   function toggleLayerVisible(id: string) {
@@ -150,6 +167,12 @@ export const useEditorStore = defineStore('editor', () => {
   const constrainToImage = ref(false)
   const showOriginal = ref(false)
 
+  // ---- layer arrangement ----
+  const layerArrangeDirection = ref<'horizontal' | 'vertical'>('horizontal')
+  const layerArrangeGap = ref(0)
+  const layerInsertX = ref(0)
+  const layerInsertY = ref(0)
+
   // ---- render trigger ----
   const canvasVersion = ref(0)
   function invalidateCanvas() { canvasVersion.value++ }
@@ -188,9 +211,10 @@ export const useEditorStore = defineStore('editor', () => {
 
   return {
     layers, activeLayerId, activeLayer, imageLoaded,
-    addLayer, removeLayer, setActiveLayer, renameLayer, moveLayerUp, moveLayerDown, toggleLayerVisible,
+    addLayer, removeLayer, setActiveLayer, renameLayer, moveLayer, moveLayerUp, moveLayerDown, toggleLayerVisible,
     regions, selectedRegionId, selectedRegionIds, selectedRegion,
     selectRegion, toggleRegionCheck, deleteRegion, clearRegions,
+    selectedLayerIds, toggleLayerCheck, clearSelectedLayers,
     textAnnotations, selectedTextId, selectedText,
     selectText, deleteText,
     activeTool, setTool,
@@ -198,5 +222,6 @@ export const useEditorStore = defineStore('editor', () => {
     constrainToImage, showOriginal,
     canvasVersion, invalidateCanvas,
     hGuides, vGuides, addHGuide, addVGuide, removeHGuide, removeVGuide, clearGuides,
+    layerArrangeDirection, layerArrangeGap,
   }
 })
