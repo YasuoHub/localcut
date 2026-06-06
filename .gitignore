@@ -1,2 +1,5 @@
 dist
 node_modules
+public/wasm/
+public/models/
+*.tsbuildinfo

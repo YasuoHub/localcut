@@ -139,3 +139,56 @@ export interface PlatformPreset {
   width: number
   height: number
 }
+
+// ---- matting ----
+
+export type MattingModelType = 'modnet' | 'modnet-fp16'
+
+export type MattingBackend = 'webgpu' | 'wasm'
+
+export type MaskViewMode = 'checkerboard'
+
+export type MaskBrushMode = 'keep' | 'remove'
+
+export type MattingStage =
+  | 'idle'
+  | 'ready'
+  | 'loading_model'
+  | 'running_inference'
+  | 'mask_editing'
+  | 'done'
+
+export type MattingImageSource = 'upload' | 'current-layer'
+
+export interface MattingMaskData {
+  width: number
+  height: number
+  data: Uint8ClampedArray
+}
+
+export interface MattingBrush {
+  size: number
+  mode: MaskBrushMode
+}
+
+export interface MattingEdgeSettings {
+  feather: number
+  expand: number
+  contract: number
+}
+
+export interface MattingProgress {
+  message: string
+  percent: number
+}
+
+export type MattingWorkerRequest =
+  | { type: 'load_model'; modelType: MattingModelType; modelData: ArrayBuffer }
+  | { type: 'run_inference'; imageData: ImageData }
+  | { type: 'cancel' }
+
+export type MattingWorkerResponse =
+  | { type: 'model_load_progress'; percent: number }
+  | { type: 'model_loaded'; backend: MattingBackend }
+  | { type: 'inference_complete'; mask: { width: number; height: number; data: number[] } }
+  | { type: 'error'; message: string }

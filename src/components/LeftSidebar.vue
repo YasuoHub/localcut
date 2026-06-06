@@ -5,7 +5,10 @@ import { useEditorStore } from '../stores/editor'
 
 const editor = useEditorStore()
 
-const emit = defineEmits<{ 'upload-image': [files: File[]] }>()
+const emit = defineEmits<{
+  'upload-image': [files: File[]]
+  'open-matting': []
+}>()
 
 const tools: { id: ToolType; label: string; icon: string }[] = [
   { id: 'select', label: '选择', icon: '⊟' },
@@ -45,6 +48,13 @@ function handleFileChange(e: Event) {
       <button class="btn-ghost upload-btn" @click="triggerUpload">上传图片</button>
       <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple style="display:none" @change="handleFileChange" />
       <span v-if="editor.imageLoaded" class="status-ok">已就绪</span>
+    </section>
+
+    <section class="section">
+      <button class="matting-entry-btn" @click="emit('open-matting')">
+        <span class="matting-icon">✂</span>
+        <span>智能抠图</span>
+      </button>
     </section>
 
     <section class="section">
@@ -89,6 +99,18 @@ function handleFileChange(e: Event) {
 .tool-icon { font-size: 20px; text-align: center; }
 .text-tool-icon { font-weight: 700; font-size: 18px; }
 .tool-label { font-size: 10px; white-space: nowrap; }
+.matting-entry-btn {
+  width: 100%; display: flex; align-items: center; justify-content: center;
+  gap: 6px; padding: 10px; background: linear-gradient(135deg, rgba(79,195,247,0.15), rgba(129,140,248,0.15));
+  border: 1px solid rgba(79,195,247,0.3); border-radius: var(--radius);
+  color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.matting-entry-btn:hover {
+  background: linear-gradient(135deg, rgba(79,195,247,0.25), rgba(129,140,248,0.25));
+  border-color: rgba(79,195,247,0.5);
+}
+.matting-icon { font-size: 16px; }
 .text-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .text-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .text-item { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: var(--radius); cursor: pointer; transition: background 0.1s; font-size: 12px; flex-shrink: 0; }

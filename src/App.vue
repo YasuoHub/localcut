@@ -4,12 +4,16 @@ import TopBar from './components/TopBar.vue'
 import LeftSidebar from './components/LeftSidebar.vue'
 import CanvasWorkspace from './components/CanvasWorkspace.vue'
 import RightSidebar from './components/RightSidebar.vue'
+import MattingWorkspace from './components/matting/MattingWorkspace.vue'
 import { useEditorStore } from './stores/editor'
 import { useHistoryStore } from './stores/history'
+import { useMattingStore } from './stores/matting'
 
 const editor = useEditorStore()
 const history = useHistoryStore()
+const matting = useMattingStore()
 const canvasWorkspace = ref<InstanceType<typeof CanvasWorkspace> | null>(null)
+const mattingWorkspace = ref<InstanceType<typeof MattingWorkspace> | null>(null)
 
 function handleUploadImage(files: File[]) {
   for (const file of files) {
@@ -27,11 +31,13 @@ function handleKeyDown(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement)?.tagName
   const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 
-  if (e.ctrlKey && e.key === 'z' && !isInput) { e.preventDefault(); history.undo(); canvasWorkspace.value?.scheduleRender() }
-  if (e.ctrlKey && e.key === 'y' && !isInput) { e.preventDefault(); history.redo(); canvasWorkspace.value?.scheduleRender() }
+  // 智能抠图模块打开时不处理编辑器的 Ctrl+Z/Y（模块内部独立处理）
+  const mattingActive = matting.stage !== 'idle'
+  if (e.ctrlKey && e.key === 'z' && !isInput && !mattingActive) { e.preventDefault(); history.undo(); canvasWorkspace.value?.scheduleRender() }
+  if (e.ctrlKey && e.key === 'y' && !isInput && !mattingActive) { e.preventDefault(); history.redo(); canvasWorkspace.value?.scheduleRender() }
   if (e.ctrlKey && e.key === 'c' && !isInput) { e.preventDefault(); canvasWorkspace.value?.copySelectedRegion() }
   if (e.ctrlKey && e.key === 'v' && !isInput) { e.preventDefault(); canvasWorkspace.value?.pasteRegion() }
-  if (e.key === 'Escape') { canvasWorkspace.value?.cancelCustomPolygon() }
+  if (e.key === 'Escape' && !mattingActive) { canvasWorkspace.value?.cancelCustomPolygon() }
   if (e.key === 'Enter' && !isInput) { canvasWorkspace.value?.finalizeCustomPolygon?.() }
   if ((e.key === 'Delete' || e.key === 'Backspace') && !isInput) {
     // batch delete if multi-select has items
@@ -91,10 +97,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeyDown))
   <div class="app-shell">
     <TopBar />
     <div class="app-body">
-      <LeftSidebar @upload-image="handleUploadImage" />
+      <LeftSidebar @upload-image="handleUploadImage" @open-matting="mattingWorkspace?.open()" />
       <CanvasWorkspace ref="canvasWorkspace" />
       <RightSidebar />
     </div>
+    <MattingWorkspace ref="mattingWorkspace" />
   </div>
 </template>
 
