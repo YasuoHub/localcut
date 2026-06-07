@@ -1,6 +1,7 @@
 import * as ort from 'onnxruntime-web'
+import { ORT_WASM_PATH } from '../constants/modelUrls'
 
-ort.env.wasm.wasmPaths = '/wasm/'
+ort.env.wasm.wasmPaths = ORT_WASM_PATH
 
 let session: ort.InferenceSession | null = null
 

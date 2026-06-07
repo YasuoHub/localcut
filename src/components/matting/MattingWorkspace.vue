@@ -17,9 +17,12 @@ const show = ref(false)
 const canvasComponent = ref<InstanceType<typeof MattingCanvas> | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
-const models: { id: MattingModelType; label: string; desc: string }[] = [
-  { id: 'modnet', label: 'MODNet (INT8)', desc: '快速 (~6.6MB, <1s)' },
-  { id: 'modnet-fp16', label: 'MODNet (FP16)', desc: '精细 (~13MB, ~1-2s)' },
+// 无需提前检测 WebGPU，FP16 始终可选。
+// DXC/驱动层面的 WebGPU 失败 JavaScript 无法可靠探知。
+// 如果 FP16 加载失败，Worker 会返回明确错误消息引导用户切 INT8。
+const models = [
+  { id: 'modnet' as MattingModelType, label: 'MODNet (INT8)', desc: '快速 (~6.6MB, <1s)' },
+  { id: 'modnet-fp16' as MattingModelType, label: 'MODNet (FP16)', desc: '精细 (~13MB, 需 WebGPU)' },
 ]
 
 const canRunInference = computed(() =>

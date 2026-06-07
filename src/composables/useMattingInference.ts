@@ -64,6 +64,7 @@ export function useMattingInference() {
   }
 
   async function loadModel(modelType: MattingModelType): Promise<void> {
+    store.lastError = ''
     store.setStage('loading_model')
     store.setProgress('检查模型缓存...', 10)
     modelReady = false
@@ -124,6 +125,7 @@ export function useMattingInference() {
       return
     }
 
+    store.lastError = ''
     store.setStage('running_inference')
     store.setProgress('预处理图片...', 5)
 

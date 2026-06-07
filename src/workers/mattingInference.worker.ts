@@ -1,6 +1,7 @@
 import * as ort from 'onnxruntime-web'
+import { ORT_WASM_PATH } from '../constants/modelUrls'
 
-ort.env.wasm.wasmPaths = '/wasm/'
+ort.env.wasm.wasmPaths = ORT_WASM_PATH
 
 let session: ort.InferenceSession | null = null
 
@@ -15,12 +16,32 @@ async function handleLoadModel(modelData: ArrayBuffer) {
     session = null
   }
 
-  // Report progress from within the worker is limited —
-  // session creation is the heavy part
-  session = await ort.InferenceSession.create(modelData, {
-    executionProviders: ['webgpu', 'wasm'],
-    graphOptimizationLevel: 'all',
-  })
+  try {
+    session = await ort.InferenceSession.create(modelData, {
+      executionProviders: ['webgpu', 'wasm'],
+      graphOptimizationLevel: 'all',
+    })
+  } catch (err: any) {
+    const msg = (err.message || String(err)).toLowerCase()
+    if (msg.includes('float16') || msg.includes('fp16') || msg.includes('not supported')) {
+      self.postMessage({
+        type: 'error',
+        message: '精细模型(FP16)需要 WebGPU，您的系统 WebGPU 不可用。请切换到快速模型(INT8)。',
+      })
+      return
+    }
+    // WDDM / D3D / DXC 错误
+    if (msg.includes('dxc') || msg.includes('d3d') || msg.includes('wddm') ||
+        msg.includes('adapter') || msg.includes('device') || msg.includes('webgpu')) {
+      self.postMessage({
+        type: 'error',
+        message: 'WebGPU 初始化失败（显卡驱动或 DirectX 问题）。WASM 后端不支持 FP16，请使用快速模型(INT8)。',
+      })
+      return
+    }
+    self.postMessage({ type: 'error', message: `模型加载失败: ${err.message || err}` })
+    return
+  }
 
   self.postMessage({ type: 'model_loaded' })
 }
@@ -66,6 +87,14 @@ async function handleRunInference(
       maskHeight,
     }, { transfer: [maskPixels.buffer] })
   } catch (err: any) {
+    const msg = (err.message || String(err)).toLowerCase()
+    if (msg.includes('float16') || msg.includes('fp16') || msg.includes('not supported')) {
+      self.postMessage({
+        type: 'error',
+        message: 'FP16 模型推理失败，WASM 后端不支持此操作。请使用快速模型(INT8)。',
+      })
+      return
+    }
     self.postMessage({ type: 'error', message: err.message || '推理失败' })
   }
 }
@@ -89,6 +118,11 @@ self.onmessage = async (e: MessageEvent<WorkerMessage>) => {
         break
     }
   } catch (err: any) {
+    const msg = (err.message || String(err)).toLowerCase()
+    if (msg.includes('float16') || msg.includes('fp16') || msg.includes('not supported')) {
+      self.postMessage({ type: 'error', message: 'FP16 模型需要 WebGPU，请切换到快速模型(INT8)。' })
+      return
+    }
     self.postMessage({ type: 'error', message: err.message || 'Worker 错误' })
   }
 }

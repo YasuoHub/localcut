@@ -1,0 +1,68 @@
+appId: com.localcut.pro
+productName: LocalCut Pro
+copyright: Copyright © 2026 LocalCut Pro
+
+directories:
+  output: dist-electron-release
+  buildResources: public
+
+files:
+  - dist-electron/**/*
+  - dist-electron/renderer/**/*
+
+extraResources:
+  # ONNX 模型文件（随应用分发，不打包进 asar）
+  - from: public/models
+    to: models
+    filter:
+      - "*.onnx"
+  # ORT WASM 运行时文件
+  - from: node_modules/onnxruntime-web/dist
+    to: wasm
+    filter:
+      - "*.wasm"
+      - "*.mjs"
+      - "*.js"
+      - "*.json"
+
+asar:
+  smartUnpack: false
+  # ASAR 加密 —— 构建时会将 asar 包加密，运行时解密
+  # 密钥使用环境变量控制，避免硬编码在仓库中
+  # 打包命令：ELECTRON_ASAR_KEY="xxx" npm run electron:build
+  encryption:
+    key: "${ELECTRON_ASAR_KEY-e1f29095212c5f249c3d225038b5023aca2b3dec961e0590d012fb503b7e6f86}"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: public/icon.png
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: LocalCut Pro
+  installerIcon: public/icon.png
+  uninstallerIcon: public/icon.png
+  installerHeaderIcon: public/icon.png
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.graphics-design
+  icon: public/icon.png
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Graphics
+  icon: public/icon.png
