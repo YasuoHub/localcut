@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useMattingStore } from '../../stores/matting'
 import { useMaskEditing } from '../../composables/useMaskEditing'
 
@@ -15,7 +15,7 @@ let imageBounds = { dx: 0, dy: 0, drawW: 0, drawH: 0, scale: 1 }
 let rendering = false // prevent re-entrant renders
 
 // Zoom & pan state
-let zoom = 1
+const zoom = ref(1)
 let offsetX = 0
 let offsetY = 0
 let baseScale = 1
@@ -29,14 +29,14 @@ let panStartOffsetX = 0
 let panStartOffsetY = 0
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 20
-const zoomPercent = computed(() => Math.round(imageBounds.scale * 100) + '%')
+const zoomPercent = ref('100%')
 
 const { isProcessingEdges, preInit, startBrush, moveBrush, endBrush, undoMaskEdit, redoMaskEdit, refineEdges, destroy: destroyEditor } = useMaskEditing(canvasRef)
 
 let resizeObserver: ResizeObserver | null = null
 
 function resetView() {
-  zoom = 1
+  zoom.value = 1
   offsetX = 0
   offsetY = 0
   requestAnimationFrame(render)
@@ -67,7 +67,7 @@ function computeImageBounds(cw: number, ch: number) {
   const imgH = store.maskData ? store.maskData.height : img.naturalHeight
 
   baseScale = Math.min(cw / imgW, ch / imgH, 1)
-  const scale = baseScale * zoom
+  const scale = baseScale * zoom.value
   const drawW = imgW * scale
   const drawH = imgH * scale
   const defaultDx = (cw - drawW) / 2
@@ -79,6 +79,7 @@ function computeImageBounds(cw: number, ch: number) {
     drawH,
     scale,
   }
+  zoomPercent.value = Math.round(scale * 100) + '%'
 }
 
 function screenToImage(canvasX: number, canvasY: number): { x: number; y: number } | null {
@@ -90,7 +91,7 @@ function screenToImage(canvasX: number, canvasY: number): { x: number; y: number
   const contentH = store.maskData?.height ?? store.sourceImage?.naturalHeight
   if (!contentW || !contentH) return null
 
-  const contentScale = Math.min(containerW / contentW, containerH / contentH, 1) * zoom
+  const contentScale = Math.min(containerW / contentW, containerH / contentH, 1) * zoom.value
   const contentDrawW = contentW * contentScale
   const contentDrawH = contentH * contentScale
   const contentDx = (containerW - contentDrawW) / 2 + offsetX
@@ -340,7 +341,7 @@ function handleWheel(e: WheelEvent) {
   const imgY = (pos.y - dy) / oldScale
 
   const factor = e.deltaY < 0 ? 1.15 : 0.85
-  const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * factor))
+  const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom.value * factor))
   const newScale = baseScale * newZoom
 
   if (!store.sourceImage) return
@@ -354,7 +355,8 @@ function handleWheel(e: WheelEvent) {
   // Adjust offset so the same image point stays under cursor
   offsetX = pos.x - newDefaultDx - imgX * newScale
   offsetY = pos.y - newDefaultDy - imgY * newScale
-  zoom = newZoom
+  zoom.value = newZoom
+  zoomPercent.value = Math.round(newScale * 100) + '%'
 
   requestAnimationFrame(render)
 }
