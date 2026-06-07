@@ -6,6 +6,7 @@ import { useMattingInference } from '../../composables/useMattingInference'
 import MattingCanvas from './MattingCanvas.vue'
 import MattingToolbar from './MattingToolbar.vue'
 import MattingControlPanel from './MattingControlPanel.vue'
+import { compositeResult, upscaleMask } from '../../utils/mattingImageUtils'
 import type { MattingModelType } from '../../types'
 
 const store = useMattingStore()
@@ -101,10 +102,15 @@ function handleKeyDown(e: KeyboardEvent) {
     const delta = e.key === '[' ? -4 : 4
     store.brush.size = Math.max(2, Math.min(200, store.brush.size + delta))
   }
-  if (e.ctrlKey && e.key === 'z') {
+  if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
     e.preventDefault()
     e.stopPropagation()
     canvasComponent.value?.undoMaskEdit()
+  }
+  if (e.ctrlKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    e.preventDefault()
+    e.stopPropagation()
+    canvasComponent.value?.redoMaskEdit()
   }
 }
 
@@ -124,26 +130,77 @@ async function handleRunInference() {
 }
 
 function handleExportPng() {
-  if (!store.resultCanvas) return
-  store.resultCanvas.toBlob((blob) => {
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `matting_${Date.now()}.png`
-    a.click()
-    URL.revokeObjectURL(url)
-  }, 'image/png')
+  const srcImg = store.sourceImage
+  const mask = store.maskData
+  const fullMask = store.fullMaskData
+  const edited = store.maskEdited
+  if (!srcImg || !mask) return
+  editor.isHeavyProcessing = true
+
+  requestAnimationFrame(() => {
+    try {
+      let resultCanvas: HTMLCanvasElement
+
+      if (fullMask && !edited) {
+        resultCanvas = compositeResult(srcImg, fullMask.data, fullMask.width, fullMask.height, Infinity)
+      } else if (fullMask) {
+        const { width: fullW, height: fullH } = fullMask
+        const upscaledMask = upscaleMask(mask.data, mask.width, mask.height, fullW, fullH)
+        resultCanvas = compositeResult(srcImg, upscaledMask, fullW, fullH, Infinity)
+      } else {
+        resultCanvas = compositeResult(srcImg, mask.data, mask.width, mask.height, Infinity)
+      }
+
+      resultCanvas.toBlob((blob) => {
+        if (!blob) { editor.isHeavyProcessing = false; return }
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `matting_${Date.now()}.png`
+        a.click()
+        URL.revokeObjectURL(url)
+        editor.isHeavyProcessing = false
+      }, 'image/png')
+    } catch (err) {
+      editor.isHeavyProcessing = false
+    }
+  })
 }
 
 function handleSendToCanvas() {
-  if (!store.resultCanvas) return
-  const img = new Image()
-  img.onload = () => {
-    editor.addLayer(img, '抠图结果')
-    close()
-  }
-  img.src = store.resultCanvas.toDataURL('image/png')
+  const srcImg = store.sourceImage
+  const mask = store.maskData
+  const fullMask = store.fullMaskData
+  const edited = store.maskEdited
+  if (!srcImg || !mask) return
+  editor.isHeavyProcessing = true
+
+  requestAnimationFrame(() => {
+    try {
+      let resultCanvas: HTMLCanvasElement
+
+      if (fullMask && !edited) {
+        resultCanvas = compositeResult(srcImg, fullMask.data, fullMask.width, fullMask.height, Infinity)
+      } else if (fullMask) {
+        const { width: fullW, height: fullH } = fullMask
+        const upscaledMask = upscaleMask(mask.data, mask.width, mask.height, fullW, fullH)
+        resultCanvas = compositeResult(srcImg, upscaledMask, fullW, fullH, Infinity)
+      } else {
+        resultCanvas = compositeResult(srcImg, mask.data, mask.width, mask.height, Infinity)
+      }
+
+      const img = new Image()
+      img.onload = () => {
+        editor.addLayer(img, '抠图结果')
+        editor.invalidateCanvas()
+        editor.isHeavyProcessing = false
+        close()
+      }
+      img.src = resultCanvas.toDataURL('image/png')
+    } catch (err) {
+      editor.isHeavyProcessing = false
+    }
+  })
 }
 
 function handleReset() {
@@ -156,7 +213,7 @@ defineExpose({ open, close })
 
 <template>
   <Teleport to="body">
-    <div v-if="show" class="matting-overlay" @click.self="close">
+    <div v-if="show" class="matting-overlay">
       <div class="matting-workspace">
         <!-- Header -->
         <div class="matting-header">
@@ -204,29 +261,51 @@ defineExpose({ open, close })
               </button>
             </div>
 
-            <!-- Model & inference (before editing) -->
-            <template v-if="!showEditingTools && store.sourceImage">
-              <div class="matting-section">
-                <div class="matting-section-title">模型</div>
-                <select
-                  class="matting-select"
-                  v-model="store.selectedModel"
-                  :disabled="store.isProcessing"
-                >
-                  <option v-for="m in models" :key="m.id" :value="m.id">
-                    {{ m.label }} - {{ m.desc }}
-                  </option>
-                </select>
-              </div>
+            <!-- Model selector (always visible when source image loaded) -->
+            <div class="matting-section" v-if="store.sourceImage">
+              <div class="matting-section-title">模型</div>
+              <select
+                class="matting-select"
+                v-model="store.selectedModel"
+                :disabled="store.isProcessing"
+              >
+                <option v-for="m in models" :key="m.id" :value="m.id">
+                  {{ m.label }} - {{ m.desc }}
+                </option>
+              </select>
+            </div>
 
+            <!-- Run inference (before editing) -->
+            <div class="matting-section" v-if="!showEditingTools && store.sourceImage">
+              <button
+                class="matting-btn matting-btn-primary"
+                :disabled="!canRunInference"
+                @click="handleRunInference"
+              >
+                <span v-if="store.isProcessing">⏳ {{ store.progress.message }}</span>
+                <span v-else>🔮 一键抠图</span>
+              </button>
+              <button
+                v-if="store.isProcessing"
+                class="matting-btn matting-btn-cancel"
+                @click="cancel"
+              >
+                取消
+              </button>
+            </div>
+
+            <!-- Re-inference + quick actions (after editing) -->
+            <template v-if="showEditingTools">
               <div class="matting-section">
+                <div class="matting-section-title">推理</div>
                 <button
                   class="matting-btn matting-btn-primary"
-                  :disabled="!canRunInference"
+                  :disabled="store.isProcessing"
                   @click="handleRunInference"
+                  :title="`使用 ${store.selectedModel === 'modnet' ? 'MODNet INT8' : 'MODNet FP16'} 重新推理`"
                 >
-                  <span v-if="store.isProcessing">⏳ {{ store.progress.message }}</span>
-                  <span v-else>🔮 一键抠图</span>
+                  🔄 重新推理
+                  <span class="re-infer-model-tag">{{ store.selectedModel === 'modnet' ? 'INT8' : 'FP16' }}</span>
                 </button>
                 <button
                   v-if="store.isProcessing"
@@ -236,14 +315,29 @@ defineExpose({ open, close })
                   取消
                 </button>
               </div>
+
+              <div class="matting-section">
+                <div class="matting-section-title">快捷操作</div>
+                <button class="matting-btn matting-btn-ghost" @click="handleReset">重置</button>
+                <button class="matting-btn matting-btn-ghost" @click="close">关闭</button>
+              </div>
             </template>
 
-            <!-- Editing tools (after inference) -->
-            <MattingToolbar v-if="showEditingTools" />
+            <!-- Quick actions (before editing) -->
+            <div class="matting-section" v-if="!showEditingTools && store.sourceImage">
+              <div class="matting-section-title">快捷操作</div>
+              <button class="matting-btn matting-btn-ghost" @click="handleReset">重置</button>
+              <button class="matting-btn matting-btn-ghost" @click="close">关闭</button>
+            </div>
           </div>
 
           <!-- Center canvas -->
-          <MattingCanvas ref="canvasComponent" />
+          <div class="matting-center">
+            <MattingCanvas ref="canvasComponent" />
+            <div v-if="editor.isHeavyProcessing" class="matting-loading-overlay">
+              <span class="matting-loading-text">处理中...</span>
+            </div>
+          </div>
 
           <!-- Right panel -->
           <div class="matting-right" v-if="store.sourceImage">
@@ -261,6 +355,9 @@ defineExpose({ open, close })
                 <template v-else-if="store.stage === 'done'">已完成</template>
                 <template v-else-if="!store.isProcessing">准备中...</template>
               </div>
+              <div v-if="store.sourceImage" class="current-model-info">
+                当前模型：{{ store.selectedModel === 'modnet' ? 'MODNet INT8' : 'MODNet FP16' }}
+              </div>
               <div v-if="store.lastError" class="matting-error">
                 {{ store.lastError }}
                 <button class="matting-error-close" @click="store.lastError = ''">&times;</button>
@@ -277,39 +374,22 @@ defineExpose({ open, close })
               </div>
             </div>
 
-            <!-- Control panel (after editing starts) -->
+            <!-- Brush toolbar (after editing starts) -->
+            <MattingToolbar v-if="showEditingTools" />
+
+            <!-- Edge settings + undo (after editing starts) -->
             <MattingControlPanel
               v-if="showEditingTools"
-              @export-png="handleExportPng"
-              @send-to-canvas="handleSendToCanvas"
-              @run-inference="handleRunInference"
-              @cancel="cancel"
               @undo="canvasComponent?.undoMaskEdit()"
             />
 
-            <!-- Export actions (before editing starts but have result) -->
-            <template v-if="!showEditingTools && store.resultCanvas">
-              <div class="matting-section">
-                <div class="matting-section-title">操作</div>
-                <button class="matting-btn" @click="handleExportPng">
-                  💾 导出透明 PNG
-                </button>
-                <button class="matting-btn" @click="handleSendToCanvas">
-                  📤 发送到画布
-                </button>
-              </div>
-            </template>
-
-            <!-- Quick actions -->
-            <div class="matting-section">
-              <div class="matting-section-title">快捷操作</div>
-              <button class="matting-btn matting-btn-ghost" @click="close">关闭</button>
-              <button
-                class="matting-btn matting-btn-ghost"
-                @click="handleReset"
-                v-if="store.sourceImage"
-              >
-                重置
+            <!-- Export actions -->
+            <div class="matting-section matting-export-section" v-if="store.resultCanvas">
+              <button class="matting-btn" @click="handleExportPng">
+                💾 导出透明 PNG
+              </button>
+              <button class="matting-btn matting-btn-accent" @click="handleSendToCanvas">
+                📤 发送到画布
               </button>
             </div>
           </div>
@@ -323,7 +403,7 @@ defineExpose({ open, close })
           </span>
           <span v-else></span>
           <span class="shortcuts-hint">
-            <template v-if="showEditingTools">画笔 [ ] 调整大小 · Ctrl+Z 撤销 · </template>
+            <template v-if="showEditingTools">画笔 [ ] 调整大小 · Ctrl+Z 撤销 · Ctrl+Y 重做 · </template>
             Esc 关闭
           </span>
         </div>
@@ -405,13 +485,43 @@ defineExpose({ open, close })
   font-size: 12px; cursor: pointer;
 }
 
+.re-infer-model-tag {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  background: rgba(255,255,255,0.2); margin-left: 4px;
+}
+.matting-btn-accent {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.matting-btn-accent:hover:not(:disabled) { opacity: 0.9; }
+
+/* Center */
+.matting-center {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  position: relative;
+}
+.matting-loading-overlay {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.3); pointer-events: none;
+}
+.matting-loading-text {
+  padding: 12px 24px; background: rgba(0,0,0,0.75);
+  border-radius: var(--radius); color: var(--accent); font-size: 14px;
+}
+
 /* Right panel */
 .matting-right {
   width: 220px; border-left: 1px solid var(--border);
   padding: 12px; display: flex; flex-direction: column; gap: 12px;
   overflow-y: auto; flex-shrink: 0;
 }
+.matting-export-section { margin-top: auto; }
 .matting-status { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.current-model-info {
+  font-size: 10px; color: var(--text-muted);
+  padding: 3px 8px; background: rgba(79,195,247,0.08);
+  border-radius: var(--radius); margin-top: 2px;
+}
 .info-detail { color: var(--text-muted); font-size: 11px; }
 
 .progress-bar-wrap { display: flex; align-items: center; gap: 8px; }

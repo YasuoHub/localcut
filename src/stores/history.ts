@@ -90,31 +90,41 @@ export const useHistoryStore = defineStore('history', () => {
   function undo() {
     if (undoStack.value.length === 0) return
     const editor = useEditorStore()
-    redoStack.value.push({
-      regions: deepCloneRegions(editor.regions),
-      selectedRegionId: editor.selectedRegionId,
-      textAnnotations: deepCloneTexts(editor.textAnnotations),
-      selectedTextId: editor.selectedTextId,
-      layerStates: snapshotLayerStates(),
-      activeLayerId: editor.activeLayerId,
-    })
-    const prev = undoStack.value.pop()!
-    applySnapshot(prev)
+    editor.isHeavyProcessing = true
+    try {
+      redoStack.value.push({
+        regions: deepCloneRegions(editor.regions),
+        selectedRegionId: editor.selectedRegionId,
+        textAnnotations: deepCloneTexts(editor.textAnnotations),
+        selectedTextId: editor.selectedTextId,
+        layerStates: snapshotLayerStates(),
+        activeLayerId: editor.activeLayerId,
+      })
+      const prev = undoStack.value.pop()!
+      applySnapshot(prev)
+    } finally {
+      editor.isHeavyProcessing = false
+    }
   }
 
   function redo() {
     if (redoStack.value.length === 0) return
     const editor = useEditorStore()
-    undoStack.value.push({
-      regions: deepCloneRegions(editor.regions),
-      selectedRegionId: editor.selectedRegionId,
-      textAnnotations: deepCloneTexts(editor.textAnnotations),
-      selectedTextId: editor.selectedTextId,
-      layerStates: snapshotLayerStates(),
-      activeLayerId: editor.activeLayerId,
-    })
-    const next = redoStack.value.pop()!
-    applySnapshot(next)
+    editor.isHeavyProcessing = true
+    try {
+      undoStack.value.push({
+        regions: deepCloneRegions(editor.regions),
+        selectedRegionId: editor.selectedRegionId,
+        textAnnotations: deepCloneTexts(editor.textAnnotations),
+        selectedTextId: editor.selectedTextId,
+        layerStates: snapshotLayerStates(),
+        activeLayerId: editor.activeLayerId,
+      })
+      const next = redoStack.value.pop()!
+      applySnapshot(next)
+    } finally {
+      editor.isHeavyProcessing = false
+    }
   }
 
   return { canUndo, canRedo, snapshot, undo, redo }

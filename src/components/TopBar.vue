@@ -18,7 +18,16 @@ const showSettings = ref(false)
       <div v-if="showSettings" class="popover-overlay" @click="showSettings = false">
         <div class="popover-panel" @click.stop>
           <div class="popover-title">系统设置</div>
-          <label class="setting-item"><input type="checkbox" v-model="editor.constrainToImage" />限制裁剪框在图片内</label>
+          <label class="setting-item">
+            <input
+              type="checkbox"
+              :checked="editor.constrainToImage"
+              :disabled="!editor.isSingleLayerMode"
+              @change="editor.constrainToImage = ($event.target as HTMLInputElement).checked"
+            />
+            限制裁剪框在图片内
+            <span class="setting-hint" v-if="!editor.isSingleLayerMode">（仅单图层可用）</span>
+          </label>
           <div class="setting-divider"></div>
           <div class="setting-label">导入图层排列</div>
           <div class="setting-row">
@@ -77,6 +86,8 @@ const showSettings = ref(false)
 .popover-title { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
 .setting-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); cursor: pointer; margin-bottom: 4px; }
 .setting-item input { accent-color: var(--accent); }
+.setting-item input:disabled { opacity: 0.6; }
+.setting-hint { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
 .setting-divider { border-top: 1px solid var(--border); margin: 8px 0; }
 .setting-label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
 .setting-row { margin-bottom: 6px; }

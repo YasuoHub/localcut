@@ -12,9 +12,10 @@ export function fitCanvasToSize(
   canvas.height = targetHeight
   const ctx = canvas.getContext('2d')!
 
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+
   if (mode === 'stretch') {
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(source, 0, 0, targetWidth, targetHeight)
     return canvas
   }
@@ -32,8 +33,6 @@ export function fitCanvasToSize(
     const dh = sh * scale
     const dx = (targetWidth - dw) / 2
     const dy = (targetHeight - dh) / 2
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(source, dx, dy, dw, dh)
     return canvas
   }
@@ -46,8 +45,6 @@ export function fitCanvasToSize(
   const dh = sh * scale
   const dx = (targetWidth - dw) / 2
   const dy = (targetHeight - dh) / 2
-  ctx.imageSmoothingEnabled = true
-  ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(source, dx, dy, dw, dh)
   return canvas
 }

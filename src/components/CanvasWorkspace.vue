@@ -6,6 +6,8 @@ import { storeToRefs } from 'pinia'
 import { useCanvasEngine } from '../composables/useCanvasEngine'
 import { useEditorStore } from '../stores/editor'
 import { useHistoryStore } from '../stores/history'
+import { nextRegionName } from '../composables/shapeUtils'
+import type { CropRegion } from '../types'
 
 const containerRef = ref<HTMLElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -18,9 +20,9 @@ const {
   regions, selectedRegionId, selectedRegionIds, activeTool,
   brushSettings, eraserSettings,
   textAnnotations, selectedTextId,
-  constrainToImage, magicWandTolerance, showOriginal,
+  constrainToImage, isSingleLayerMode, magicWandTolerance, showOriginal,
   layers, activeLayerId, canvasVersion,
-  hGuides, vGuides, selectedLayerIds,
+  hGuides, vGuides, selectedLayerIds, isHeavyProcessing,
 } = storeToRefs(editor)
 
 const engine = useCanvasEngine(
@@ -30,12 +32,14 @@ const engine = useCanvasEngine(
   brushSettings, eraserSettings,
   textAnnotations.value, selectedTextId,
   constrainToImage,
+  isSingleLayerMode,
   magicWandTolerance,
   showOriginal,
   layers, activeLayerId,
   canvasVersion,
   hGuides, vGuides,
   selectedLayerIds,
+  isHeavyProcessing,
   editor.removeHGuide, editor.removeVGuide,
   history.snapshot,
 )
@@ -154,6 +158,58 @@ function deleteText(id: string) {
 function copySelectedRegion() { engine.copySelectedRegion() }
 function pasteRegion() { engine.pasteRegion() }
 
+interface PresetCropSizeInput {
+  id: string
+  name: string
+  width: number
+  height: number
+}
+
+function createPresetRegion(preset: PresetCropSizeInput) {
+  // 自由裁剪：不创建预设，切换到矩形工具让用户手动绘制
+  if (preset.width === 0 || preset.height === 0) {
+    editor.setTool('rect')
+    return
+  }
+
+  const layer = editor.activeLayer
+  if (!layer) return
+
+  const imgW = layer.image.naturalWidth
+  const imgH = layer.image.naturalHeight
+
+  // 宽度与图层宽度对齐，高度等比例缩放
+  let rectW = imgW
+  let rectH = Math.round(imgW * (preset.height / preset.width))
+
+  // 单图层 + 启用约束时：裁剪框不能超出图片边界
+  const shouldConstrain = editor.isSingleLayerMode && editor.constrainToImage
+  if (shouldConstrain && rectH > imgH) {
+    rectH = imgH
+    rectW = Math.round(imgH * (preset.width / preset.height))
+  }
+
+  // 水平中线与图层水平中线对齐
+  const rectX = 0
+  const rectY = shouldConstrain
+    ? Math.max(0, Math.round((imgH - rectH) / 2))
+    : Math.round((imgH - rectH) / 2)
+
+  history.snapshot()
+  const region: CropRegion = {
+    id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name: nextRegionName(),
+    x: rectX,
+    y: rectY,
+    width: rectW,
+    height: rectH,
+    shape: 'rect',
+  }
+  editor.regions.push(region)
+  editor.selectRegion(region.id)
+  engine.scheduleRender()
+}
+
 defineExpose({
   selectRegion, selectText,
   deleteRegion, deleteText,
@@ -162,6 +218,7 @@ defineExpose({
   cancelCustomPolygon: engine.cancelCustomPolygon,
   finalizeCustomPolygon: engine.finalizeCustomPolygon,
   scheduleRender: engine.scheduleRender,
+  createPresetRegion,
 })
 
 function handleDragOver(e: DragEvent) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' }
@@ -220,6 +277,9 @@ onBeforeUnmount(() => engine.destroy())
     <canvas ref="vrulerRef" class="ruler-v" @mousedown="handleRulerClick($event, 'v')" />
     <main ref="containerRef" class="workspace" @dragover="handleDragOver" @drop="handleDrop">
       <canvas ref="canvasRef" class="canvas" />
+      <div v-if="isHeavyProcessing" class="heavy-loading-overlay">
+        <span class="heavy-loading-text">处理中...</span>
+      </div>
       <div v-if="!editor.imageLoaded" class="drop-hint">
         <div class="drop-icon">+</div>
         <div>拖拽图片到此处或点击上传</div>
@@ -286,4 +346,14 @@ onBeforeUnmount(() => engine.destroy())
 }
 .show-original-toggle input:checked + .toggle-track .toggle-thumb { left: 18px; }
 .toggle-label { font-size: 11px; color: rgba(255,255,255,0.6); }
+
+.heavy-loading-overlay {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.3); z-index: 20; pointer-events: none;
+}
+.heavy-loading-text {
+  padding: 12px 24px; background: rgba(0,0,0,0.75);
+  border-radius: var(--radius); color: var(--accent); font-size: 14px;
+}
 </style>

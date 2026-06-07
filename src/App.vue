@@ -97,7 +97,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeyDown))
   <div class="app-shell">
     <TopBar />
     <div class="app-body">
-      <LeftSidebar @upload-image="handleUploadImage" @open-matting="mattingWorkspace?.open()" />
+      <LeftSidebar @upload-image="handleUploadImage" @open-matting="mattingWorkspace?.open()" @create-preset="canvasWorkspace?.createPresetRegion($event)" />
       <CanvasWorkspace ref="canvasWorkspace" />
       <RightSidebar />
     </div>

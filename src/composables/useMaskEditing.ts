@@ -1,31 +1,115 @@
 import { ref, type Ref } from 'vue'
 import { useMattingStore } from '../stores/matting'
+import { useEditorStore } from '../stores/editor'
 import { compositeResult } from '../utils/mattingImageUtils'
-import { applyEdgeRefinements } from '../utils/mattingPostProcess'
+
+type WorkerRequest = {
+  type: 'process_edges'
+  id: number
+  mask: Uint8ClampedArray
+  width: number
+  height: number
+  expand: number
+  contract: number
+  feather: number
+}
+
+type WorkerResponse = {
+  type: 'edges_processed'
+  id: number
+  mask: Uint8ClampedArray
+  error?: string
+}
+
+function createEdgeWorker(): Worker {
+  return new Worker(
+    new URL('../workers/mattingPostProcess.worker.ts', import.meta.url),
+    { type: 'module' },
+  )
+}
 
 export function useMaskEditing(
   displayCanvasRef: Ref<HTMLCanvasElement | null>,
 ) {
   const store = useMattingStore()
   const isDrawing = ref(false)
+  const isProcessingEdges = ref(false)
   let maskCanvas: HTMLCanvasElement | null = null
   let maskCtx: CanvasRenderingContext2D | null = null
 
-  // Persistent composite canvas (avoids full-image recomposite every frame)
   let compositeCanvas: HTMLCanvasElement | null = null
   let compositeCtx: CanvasRenderingContext2D | null = null
 
-  // Undo stack
+  // Source image pre-rendered at working resolution (avoids sampling full-res HTMLImageElement)
+  let workingSource: HTMLCanvasElement | null = null
+
+  // Undo / redo stacks
   const maskHistory: Uint8ClampedArray[] = []
+  const maskRedoHistory: Uint8ClampedArray[] = []
   const MAX_HISTORY = 20
 
-  // rAF throttle + dirty rects
+  // rAF throttle + bounding boxes (O(1) expand, replaces O(n²) dirty rect merge)
   let rafPending = false
-  let dirtyRects: { x: number; y: number; w: number; h: number }[] = []
+  let frameBounds: { x: number; y: number; w: number; h: number } | null = null
+  let strokeBounds: { x: number; y: number; w: number; h: number } | null = null
 
-  // Previous brush position for interpolation
+  // Pre-rendered brush stamp caches (rebuilt when size changes)
+  let keepStamp: HTMLCanvasElement | null = null
+  let removeStamp: HTMLCanvasElement | null = null
+  let stampSize = 0
+
+  // Previous brush position + bezier midpoint for smooth curve interpolation
   let lastX = -1
   let lastY = -1
+  let midX = -1
+  let midY = -1
+
+  // Edge-processing Worker state
+  let edgeWorker: Worker | null = null
+  let edgeRequestId = 0
+
+  function ensureEdgeWorker(): Worker {
+    if (!edgeWorker) {
+      edgeWorker = createEdgeWorker()
+      edgeWorker.addEventListener('message', onEdgeWorkerMessage)
+    }
+    return edgeWorker
+  }
+
+  function onEdgeWorkerMessage(e: MessageEvent<WorkerResponse>) {
+    const msg = e.data
+    if (msg.type !== 'edges_processed') return
+    if (msg.id !== edgeRequestId) return
+
+    isProcessingEdges.value = false
+
+    if (msg.error || !store.sourceImage || !store.maskData) return
+
+    store.maskEdited = true
+
+    const w = store.maskData.width
+    const h = store.maskData.height
+    if (maskCanvas && maskCtx && maskCanvas.width === w && maskCanvas.height === h) {
+      const imgData = maskCtx.createImageData(w, h)
+      const dst32 = new Uint32Array(imgData.data.buffer)
+      const src = msg.mask
+      for (let i = 0; i < src.length; i++) {
+        const val = src[i]
+        dst32[i] = (val << 24) | (val << 16) | (val << 8) | val
+      }
+      maskCtx.putImageData(imgData, 0, 0)
+      store.maskData = { width: w, height: h, data: new Uint8ClampedArray(src) }
+      fullComposite()
+    } else {
+      store.maskData = { width: w, height: h, data: new Uint8ClampedArray(msg.mask) }
+      const resultCanvas = compositeResult(store.sourceImage, msg.mask, w, h)
+      store.setResultCanvas(resultCanvas)
+      compositeCanvas = resultCanvas
+      compositeCtx = resultCanvas.getContext('2d')!
+    }
+
+    triggerDisplayUpdate()
+  }
 
   function ensureMaskCanvas() {
     if (!store.maskData) return false
@@ -39,18 +123,31 @@ export function useMaskEditing(
     maskCtx = maskCanvas.getContext('2d')!
 
     const imgData = maskCtx.createImageData(maskCanvas.width, maskCanvas.height)
-    for (let i = 0; i < store.maskData.data.length; i++) {
-      const val = store.maskData.data[i]
-      imgData.data[i * 4] = val
-      imgData.data[i * 4 + 1] = val
-      imgData.data[i * 4 + 2] = val
-      imgData.data[i * 4 + 3] = 255
+    const src = store.maskData.data
+    const dst32 = new Uint32Array(imgData.data.buffer)
+    for (let i = 0; i < src.length; i++) {
+      const val = src[i]
+      dst32[i] = (val << 24) | (val << 16) | (val << 8) | val
     }
     maskCtx.putImageData(imgData, 0, 0)
 
-    // Force full composite rebuild on dimension change
     compositeCanvas = null
     compositeCtx = null
+    workingSource = null
+    return true
+  }
+
+  function ensureWorkingSource() {
+    if (!store.sourceImage || !store.maskData) return false
+    const w = store.maskData.width
+    const h = store.maskData.height
+    if (!workingSource || workingSource.width !== w || workingSource.height !== h) {
+      workingSource = document.createElement('canvas')
+      workingSource.width = w
+      workingSource.height = h
+      const wsCtx = workingSource.getContext('2d')!
+      wsCtx.drawImage(store.sourceImage, 0, 0, w, h)
+    }
     return true
   }
 
@@ -72,24 +169,16 @@ export function useMaskEditing(
   function fullComposite() {
     if (!store.sourceImage || !store.maskData || !compositeCtx || !compositeCanvas) return
     const { width, height, data } = store.maskData
-
-    compositeCtx.drawImage(store.sourceImage, 0, 0, width, height)
-    const imgData = compositeCtx.getImageData(0, 0, width, height)
-    const pixels = imgData.data
-    for (let i = 0; i < width * height; i++) {
-      pixels[i * 4 + 3] = data[i]
-    }
-    compositeCtx.putImageData(imgData, 0, 0)
+    const result = compositeResult(store.sourceImage, data, width, height)
+    compositeCtx.clearRect(0, 0, width, height)
+    compositeCtx.drawImage(result, 0, 0)
     store.setResultCanvas(compositeCanvas)
   }
 
   function saveMaskSnapshot() {
-    if (!maskCtx || !maskCanvas) return
-    const imgData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height)
-    const snapshot = new Uint8ClampedArray(maskCanvas.width * maskCanvas.height)
-    for (let i = 0; i < snapshot.length; i++) {
-      snapshot[i] = imgData.data[i * 4]
-    }
+    if (!store.maskData) return
+    store.maskEdited = true
+    const snapshot = new Uint8ClampedArray(store.maskData.data)
     maskHistory.push(snapshot)
     if (maskHistory.length > MAX_HISTORY) {
       maskHistory.shift()
@@ -98,27 +187,113 @@ export function useMaskEditing(
 
   function undoMaskEdit() {
     if (maskHistory.length === 0 || !maskCtx || !maskCanvas) return
-    const snapshot = maskHistory.pop()!
-    const imgData = maskCtx.createImageData(maskCanvas.width, maskCanvas.height)
-    for (let i = 0; i < snapshot.length; i++) {
-      const val = snapshot[i]
-      imgData.data[i * 4] = val
-      imgData.data[i * 4 + 1] = val
-      imgData.data[i * 4 + 2] = val
-      imgData.data[i * 4 + 3] = 255
+    const editor = useEditorStore()
+    editor.isHeavyProcessing = true
+    try {
+      if (store.maskData) {
+        const current = new Uint8ClampedArray(store.maskData.data)
+        maskRedoHistory.push(current)
+        if (maskRedoHistory.length > MAX_HISTORY) maskRedoHistory.shift()
+      }
+      const snapshot = maskHistory.pop()!
+      const imgData = maskCtx.createImageData(maskCanvas.width, maskCanvas.height)
+      const dst32 = new Uint32Array(imgData.data.buffer)
+      for (let i = 0; i < snapshot.length; i++) {
+        const val = snapshot[i]
+        dst32[i] = (val << 24) | (val << 16) | (val << 8) | val
+      }
+      maskCtx.putImageData(imgData, 0, 0)
+      store.maskData = { width: maskCanvas.width, height: maskCanvas.height, data: new Uint8ClampedArray(snapshot) }
+      fullComposite()
+      triggerDisplayUpdate()
+    } finally {
+      editor.isHeavyProcessing = false
     }
-    maskCtx.putImageData(imgData, 0, 0)
-    syncMaskFromCanvas()
-    fullComposite()
-    triggerDisplayUpdate()
+  }
+
+  function redoMaskEdit() {
+    if (maskRedoHistory.length === 0 || !maskCtx || !maskCanvas) return
+    const editor = useEditorStore()
+    editor.isHeavyProcessing = true
+    try {
+      if (store.maskData) {
+        const current = new Uint8ClampedArray(store.maskData.data)
+        maskHistory.push(current)
+        if (maskHistory.length > MAX_HISTORY) maskHistory.shift()
+      }
+      const snapshot = maskRedoHistory.pop()!
+      const imgData = maskCtx.createImageData(maskCanvas.width, maskCanvas.height)
+      const dst32 = new Uint32Array(imgData.data.buffer)
+      for (let i = 0; i < snapshot.length; i++) {
+        const val = snapshot[i]
+        dst32[i] = (val << 24) | (val << 16) | (val << 8) | val
+      }
+      maskCtx.putImageData(imgData, 0, 0)
+      store.maskData = { width: maskCanvas.width, height: maskCanvas.height, data: new Uint8ClampedArray(snapshot) }
+      fullComposite()
+      triggerDisplayUpdate()
+    } finally {
+      editor.isHeavyProcessing = false
+    }
+  }
+
+  function preInit() {
+    if (!store.maskData || !store.sourceImage) return
+    ensureMaskCanvas()
+    ensureWorkingSource()
+    if (store.resultCanvas &&
+        store.resultCanvas.width === store.maskData.width &&
+        store.resultCanvas.height === store.maskData.height) {
+      compositeCanvas = store.resultCanvas
+      compositeCtx = compositeCanvas.getContext('2d')!
+      return
+    }
+    ensureCompositeCanvas()
+  }
+
+  function rebuildBrushStamps(size: number) {
+    const dim = size
+    const radius = size / 2
+    const cx = dim / 2
+    const cy = dim / 2
+
+    keepStamp = document.createElement('canvas')
+    keepStamp.width = keepStamp.height = dim
+    const kctx = keepStamp.getContext('2d')!
+    const kgrad = kctx.createRadialGradient(cx, cy, radius * 0.2, cx, cy, radius)
+    kgrad.addColorStop(0, 'rgba(255, 255, 255, 1)')
+    kgrad.addColorStop(0.6, 'rgba(255, 255, 255, 0.9)')
+    kgrad.addColorStop(1, 'rgba(255, 255, 255, 0)')
+    kctx.fillStyle = kgrad
+    kctx.beginPath()
+    kctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    kctx.fill()
+
+    removeStamp = document.createElement('canvas')
+    removeStamp.width = removeStamp.height = dim
+    const rctx = removeStamp.getContext('2d')!
+    const rgrad = rctx.createRadialGradient(cx, cy, radius * 0.2, cx, cy, radius)
+    rgrad.addColorStop(0, 'rgba(0, 0, 0, 1)')
+    rgrad.addColorStop(0.6, 'rgba(0, 0, 0, 0.9)')
+    rgrad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    rctx.fillStyle = rgrad
+    rctx.beginPath()
+    rctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    rctx.fill()
+
+    stampSize = size
   }
 
   function startBrush(canvasX: number, canvasY: number) {
     if (!ensureMaskCanvas()) return
     saveMaskSnapshot()
+    maskRedoHistory.length = 0
+    strokeBounds = null
     isDrawing.value = true
     lastX = canvasX
     lastY = canvasY
+    midX = canvasX
+    midY = canvasY
     drawBrushDot(canvasX, canvasY)
     scheduleFlush()
   }
@@ -128,22 +303,24 @@ export function useMaskEditing(
 
     const brush = store.brush
     const radius = brush.size / 2
-    const step = Math.max(1, radius * 0.4)
+    const step = Math.max(1, radius * 0.25)
 
-    const dx = canvasX - lastX
-    const dy = canvasY - lastY
-    const dist = Math.sqrt(dx * dx + dy * dy)
+    const newMidX = (lastX + canvasX) / 2
+    const newMidY = (lastY + canvasY) / 2
 
-    if (dist >= step) {
-      const steps = Math.ceil(dist / step)
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps
-        drawBrushDot(lastX + dx * t, lastY + dy * t)
-      }
-    } else if (dist > 0) {
-      drawBrushDot(canvasX, canvasY)
+    const dist = Math.sqrt((newMidX - midX) ** 2 + (newMidY - midY) ** 2)
+    const steps = Math.max(0, Math.ceil(dist / step))
+
+    for (let i = 1; i <= steps; i++) {
+      const t = i / (steps || 1)
+      const u = 1 - t
+      const bx = u * u * midX + 2 * u * t * lastX + t * t * newMidX
+      const by = u * u * midY + 2 * u * t * lastY + t * t * newMidY
+      drawBrushDot(bx, by)
     }
 
+    midX = newMidX
+    midY = newMidY
     lastX = canvasX
     lastY = canvasY
     scheduleFlush()
@@ -151,48 +328,72 @@ export function useMaskEditing(
 
   function endBrush() {
     isDrawing.value = false
+    if (midX >= 0 && midY >= 0) {
+      const brush = store.brush
+      const radius = brush.size / 2
+      const step = Math.max(1, radius * 0.25)
+      const dist = Math.sqrt((lastX - midX) ** 2 + (lastY - midY) ** 2)
+      const steps = Math.ceil(dist / step)
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps
+        drawBrushDot(midX + (lastX - midX) * t, midY + (lastY - midY) * t)
+      }
+    }
     lastX = -1
     lastY = -1
+    midX = -1
+    midY = -1
     if (rafPending) {
       rafPending = false
       flushBrushEdits()
     }
+    syncMaskFromCanvas()
   }
 
   function drawBrushDot(canvasX: number, canvasY: number) {
     if (!maskCtx || !maskCanvas) return
 
     const brush = store.brush
-    const radius = brush.size / 2
+    const size = brush.size
 
-    const gradient = maskCtx.createRadialGradient(
-      canvasX, canvasY, radius * 0.2,
-      canvasX, canvasY, radius,
-    )
-
-    if (brush.mode === 'keep') {
-      maskCtx.globalCompositeOperation = 'source-over'
-      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.9)')
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
-    } else {
-      maskCtx.globalCompositeOperation = 'destination-out'
-      gradient.addColorStop(0, 'rgba(0, 0, 0, 1)')
-      gradient.addColorStop(0.6, 'rgba(0, 0, 0, 0.9)')
-      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    if (size !== stampSize) {
+      rebuildBrushStamps(size)
     }
 
-    maskCtx.fillStyle = gradient
-    maskCtx.beginPath()
-    maskCtx.arc(canvasX, canvasY, radius, 0, Math.PI * 2)
-    maskCtx.fill()
+    const stamp = brush.mode === 'keep' ? keepStamp! : removeStamp!
+    const half = stampSize / 2
 
+    maskCtx.globalCompositeOperation = brush.mode === 'keep' ? 'source-over' : 'destination-out'
+    maskCtx.drawImage(stamp, canvasX - half, canvasY - half)
+
+    const radius = size / 2
     const margin = 4
     const rx = Math.max(0, Math.floor(canvasX - radius - margin))
     const ry = Math.max(0, Math.floor(canvasY - radius - margin))
     const rw = Math.min(maskCanvas.width - rx, Math.ceil(radius * 2 + margin * 2))
     const rh = Math.min(maskCanvas.height - ry, Math.ceil(radius * 2 + margin * 2))
-    dirtyRects.push({ x: rx, y: ry, w: rw, h: rh })
+
+    // O(1) bounding box expansion (replaces O(n²) dirty rect merge)
+    if (!frameBounds) {
+      frameBounds = { x: rx, y: ry, w: rw, h: rh }
+    } else {
+      const nx = Math.min(frameBounds.x, rx)
+      const ny = Math.min(frameBounds.y, ry)
+      frameBounds.w = Math.max(frameBounds.x + frameBounds.w, rx + rw) - nx
+      frameBounds.h = Math.max(frameBounds.y + frameBounds.h, ry + rh) - ny
+      frameBounds.x = nx
+      frameBounds.y = ny
+    }
+    if (!strokeBounds) {
+      strokeBounds = { x: rx, y: ry, w: rw, h: rh }
+    } else {
+      const sx = Math.min(strokeBounds.x, rx)
+      const sy = Math.min(strokeBounds.y, ry)
+      strokeBounds.w = Math.max(strokeBounds.x + strokeBounds.w, rx + rw) - sx
+      strokeBounds.h = Math.max(strokeBounds.y + strokeBounds.h, ry + rh) - sy
+      strokeBounds.x = sx
+      strokeBounds.y = sy
+    }
   }
 
   function scheduleFlush() {
@@ -205,40 +406,29 @@ export function useMaskEditing(
   function flushBrushEdits() {
     rafPending = false
     if (!maskCtx || !maskCanvas || !store.maskData) return
-    if (!ensureCompositeCanvas()) return
+    if (!ensureCompositeCanvas() || !ensureWorkingSource()) return
 
-    const maskW = maskCanvas.width
-    const srcImg = store.sourceImage!
+    const rect = frameBounds
+    frameBounds = null
+    if (!rect || rect.w <= 0 || rect.h <= 0) return
 
-    for (const rect of dirtyRects) {
-      if (rect.w <= 0 || rect.h <= 0) continue
+    // Single bounding box compositing: 2x getImageData on ONE rect (~1ms total)
+    // vs. previous O(n²) merge + 20+ rects × 2 getImageData (~40ms)
+    compositeCtx!.clearRect(rect.x, rect.y, rect.w, rect.h)
+    compositeCtx!.drawImage(workingSource!,
+      rect.x, rect.y, rect.w, rect.h,
+      rect.x, rect.y, rect.w, rect.h)
 
-      // 1. Sync mask pixels (only dirty rect)
-      const maskImgData = maskCtx.getImageData(rect.x, rect.y, rect.w, rect.h)
-      const maskSrc = maskImgData.data
-      for (let row = 0; row < rect.h; row++) {
-        for (let col = 0; col < rect.w; col++) {
-          const srcIdx = row * rect.w + col
-          const dstIdx = (rect.y + row) * maskW + (rect.x + col)
-          store.maskData.data[dstIdx] = maskSrc[srcIdx * 4]
-        }
+    const regionData = compositeCtx!.getImageData(rect.x, rect.y, rect.w, rect.h)
+    const pixels = regionData.data
+    const maskRegion = maskCtx.getImageData(rect.x, rect.y, rect.w, rect.h)
+    const maskPixels = maskRegion.data
+    for (let row = 0; row < rect.h; row++) {
+      for (let col = 0; col < rect.w; col++) {
+        pixels[(row * rect.w + col) * 4 + 3] = maskPixels[(row * rect.w + col) * 4 + 3]
       }
-
-      // 2. Incremental composite: only redraw the dirty rect
-      compositeCtx!.clearRect(rect.x, rect.y, rect.w, rect.h)
-      compositeCtx!.drawImage(srcImg, rect.x, rect.y, rect.w, rect.h, rect.x, rect.y, rect.w, rect.h)
-
-      const regionData = compositeCtx!.getImageData(rect.x, rect.y, rect.w, rect.h)
-      const pixels = regionData.data
-      for (let row = 0; row < rect.h; row++) {
-        for (let col = 0; col < rect.w; col++) {
-          const maskIdx = (rect.y + row) * maskW + (rect.x + col)
-          pixels[(row * rect.w + col) * 4 + 3] = store.maskData.data[maskIdx]
-        }
-      }
-      compositeCtx!.putImageData(regionData, rect.x, rect.y)
     }
-    dirtyRects = []
+    compositeCtx!.putImageData(regionData, rect.x, rect.y)
 
     store.setResultCanvas(compositeCanvas!)
     triggerDisplayUpdate()
@@ -246,12 +436,31 @@ export function useMaskEditing(
 
   function syncMaskFromCanvas() {
     if (!maskCtx || !maskCanvas || !store.maskData) return
-    const imgData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height)
-    const newData = new Uint8ClampedArray(maskCanvas.width * maskCanvas.height)
-    for (let i = 0; i < newData.length; i++) {
-      newData[i] = imgData.data[i * 4]
+
+    const bounds = strokeBounds
+    strokeBounds = null
+
+    if (bounds && bounds.w > 0 && bounds.h > 0) {
+      // Incremental sync: only read the stroke region (e.g. 200x200 vs 4096x4096 full)
+      const { x, y, w, h } = bounds
+      const regionData = maskCtx.getImageData(x, y, w, h)
+      const newData = new Uint8ClampedArray(store.maskData.data)
+      for (let row = 0; row < h; row++) {
+        for (let col = 0; col < w; col++) {
+          const maskIdx = (y + row) * maskCanvas.width + (x + col)
+          newData[maskIdx] = regionData.data[(row * w + col) * 4 + 3]
+        }
+      }
+      store.maskData = { width: maskCanvas.width, height: maskCanvas.height, data: newData }
+    } else {
+      // Full-mask sync (undo/redo/edge-refinement fallback)
+      const imgData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height)
+      const newData = new Uint8ClampedArray(maskCanvas.width * maskCanvas.height)
+      for (let i = 0; i < newData.length; i++) {
+        newData[i] = imgData.data[i * 4 + 3]
+      }
+      store.maskData = { width: maskCanvas.width, height: maskCanvas.height, data: newData }
     }
-    store.maskData = { width: maskCanvas.width, height: maskCanvas.height, data: newData }
   }
 
   function triggerDisplayUpdate() {
@@ -261,59 +470,72 @@ export function useMaskEditing(
     }
   }
 
-  /**
-   * Full recomposite: used when initializing or edge sliders change
-   */
-  function updateDisplay() {
+  function updateDisplayRaw() {
     if (!store.sourceImage || !store.maskData) return
-
-    let mask = store.maskData.data
-
-    if (store.edgeSettings.feather > 0 || store.edgeSettings.expand > 0 || store.edgeSettings.contract > 0) {
-      mask = applyEdgeRefinements(
-        mask,
-        store.maskData.width,
-        store.maskData.height,
-        store.edgeSettings.expand,
-        store.edgeSettings.contract,
-        store.edgeSettings.feather,
-      )
-    }
-
-    const resultCanvas = compositeResult(
-      store.sourceImage,
-      mask,
-      store.maskData.width,
-      store.maskData.height,
-    )
-    store.setResultCanvas(resultCanvas)
-
-    // Keep persistent canvas in sync
     if (compositeCanvas && compositeCtx) {
-      compositeCtx.clearRect(0, 0, compositeCanvas.width, compositeCanvas.height)
-      compositeCtx.drawImage(resultCanvas, 0, 0)
+      fullComposite()
     } else {
+      const { width, height, data } = store.maskData
+      const resultCanvas = compositeResult(store.sourceImage, data, width, height)
+      store.setResultCanvas(resultCanvas)
       compositeCanvas = resultCanvas
       compositeCtx = resultCanvas.getContext('2d')!
     }
-
     triggerDisplayUpdate()
   }
 
   function refineEdges() {
-    if (!store.maskData) return
-    compositeCanvas = null
-    compositeCtx = null
-    updateDisplay()
+    if (!store.maskData || !store.sourceImage) return
+
+    const hasEdges =
+      store.edgeSettings.feather > 0 ||
+      store.edgeSettings.expand > 0 ||
+      store.edgeSettings.contract > 0
+
+    if (!hasEdges) {
+      updateDisplayRaw()
+      return
+    }
+
+    const worker = ensureEdgeWorker()
+    const id = ++edgeRequestId
+
+    const maskCopy = new Uint8ClampedArray(store.maskData.data)
+    isProcessingEdges.value = true
+
+    worker.postMessage(
+      {
+        type: 'process_edges',
+        id,
+        mask: maskCopy,
+        width: store.maskData.width,
+        height: store.maskData.height,
+        expand: store.edgeSettings.expand,
+        contract: store.edgeSettings.contract,
+        feather: store.edgeSettings.feather,
+      } satisfies WorkerRequest,
+      [maskCopy.buffer],
+    )
+  }
+
+  function destroy() {
+    if (edgeWorker) {
+      edgeWorker.terminate()
+      edgeWorker = null
+    }
   }
 
   return {
+    isProcessingEdges,
+    preInit,
     startBrush,
     moveBrush,
     endBrush,
     undoMaskEdit,
+    redoMaskEdit,
     refineEdges,
     saveMaskSnapshot,
-    updateDisplay,
+    updateDisplay: updateDisplayRaw,
+    destroy,
   }
 }

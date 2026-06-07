@@ -568,13 +568,36 @@ export function useCanvasEngine(
     }
 
     // Ctrl+click in non-select mode:
-    //   on layer → activate + drag (pending, activates on move >3px)
+    //   on resize handle → resize (let it fall through to handle detection below)
+    //   on layer body → activate + drag (pending, activates on move >3px)
     if ((e.ctrlKey || e.metaKey) && activeTool.value !== 'select') {
-      const hitL2 = hitTestLayer(sx, sy)
-      if (hitL2) {
-        activeLayerId.value = hitL2.id
-        pendingCtrlDragLayer.value = { x: hitL2.x, y: hitL2.y, sx, sy }
-        return
+      // check if clicking on a resize handle of the active layer first
+      const al = getActiveLayer()
+      let ctrlOnHandle = false
+      if (al && al.visible) {
+        const hsz = 12
+        const lx2 = (al.x - view.offsetX) * view.scale
+        const ly2 = (al.y - view.offsetY) * view.scale
+        const lw2 = al.image.naturalWidth * al.scaleX * view.scale
+        const lh2 = al.image.naturalHeight * al.scaleY * view.scale
+        const lcx2 = lx2 + lw2 / 2, lcy2 = ly2 + lh2 / 2
+        ctrlOnHandle =
+          (Math.abs(sx - lx2) < hsz && Math.abs(sy - ly2) < hsz) ||
+          (Math.abs(sx - (lx2 + lw2)) < hsz && Math.abs(sy - ly2) < hsz) ||
+          (Math.abs(sx - lx2) < hsz && Math.abs(sy - (ly2 + lh2)) < hsz) ||
+          (Math.abs(sx - (lx2 + lw2)) < hsz && Math.abs(sy - (ly2 + lh2)) < hsz) ||
+          (Math.abs(sx - lcx2) < hsz && Math.abs(sy - ly2) < hsz) ||
+          (Math.abs(sx - lcx2) < hsz && Math.abs(sy - (ly2 + lh2)) < hsz) ||
+          (Math.abs(sx - lx2) < hsz && Math.abs(sy - lcy2) < hsz) ||
+          (Math.abs(sx - (lx2 + lw2)) < hsz && Math.abs(sy - lcy2) < hsz)
+      }
+      if (!ctrlOnHandle) {
+        const hitL2 = hitTestLayer(sx, sy)
+        if (hitL2) {
+          activeLayerId.value = hitL2.id
+          pendingCtrlDragLayer.value = { x: hitL2.x, y: hitL2.y, sx, sy }
+          return
+        }
       }
     }
 

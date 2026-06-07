@@ -1,7 +1,8 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useMattingStore } from '../stores/matting'
+import { useEditorStore } from '../stores/editor'
 import { getCachedModel, cacheModel, downloadModel } from '../utils/mattingModelCache'
-import { imageToImageData, compositeResult } from '../utils/mattingImageUtils'
+import { compositeResult, clampDimensions, downscaleMask } from '../utils/mattingImageUtils'
 import { MODEL_URLS } from '../constants/modelUrls'
 import type { MattingModelType, MattingMaskData } from '../types'
 
@@ -130,22 +131,15 @@ export function useMattingInference() {
 
     try {
       const inputSize = 512
-      const imageData = imageToImageData(store.sourceImage)
-      const maskWidth = imageData.width
-      const maskHeight = imageData.height
+      const maskWidth = store.sourceImage.naturalWidth
+      const maskHeight = store.sourceImage.naturalHeight
 
-      // Preprocess on main thread (needs DOM canvas for drawImage)
+      // Resize directly from source image (GPU-accelerated, no full-res ImageData needed)
       const resizedCanvas = document.createElement('canvas')
       resizedCanvas.width = inputSize
       resizedCanvas.height = inputSize
       const rctx = resizedCanvas.getContext('2d')!
-
-      const tempCanvas = document.createElement('canvas')
-      tempCanvas.width = maskWidth
-      tempCanvas.height = maskHeight
-      const tctx = tempCanvas.getContext('2d')!
-      tctx.putImageData(imageData, 0, 0)
-      rctx.drawImage(tempCanvas, 0, 0, inputSize, inputSize)
+      rctx.drawImage(store.sourceImage, 0, 0, inputSize, inputSize)
       const resizedData = rctx.getImageData(0, 0, inputSize, inputSize)
 
       // NCHW normalization
@@ -175,22 +169,38 @@ export function useMattingInference() {
       store.setProgress('合成结果...', 90)
       store.inferenceTime = Math.round(performance.now() - startTime)
 
-      const maskData: MattingMaskData = {
+      // Store full-resolution mask for export
+      store.fullMaskData = {
         width: result.maskWidth,
         height: result.maskHeight,
         data: result.maskData,
       }
-      store.setMask(maskData)
 
-      // Composite result on main thread (needs canvas)
-      const resultCanvas = compositeResult(
-        store.sourceImage,
-        result.maskData,
-        result.maskWidth,
-        result.maskHeight,
-      )
+      // Yield to browser so loading overlay renders before heavy work
+      const editor = useEditorStore()
+      editor.isHeavyProcessing = true
+      await new Promise(resolve => requestAnimationFrame(resolve))
+
+      // Create working-resolution mask for display/editing
+      const { w, h } = clampDimensions(result.maskWidth, result.maskHeight)
+      let workingMaskData: Uint8ClampedArray
+      if (w === result.maskWidth && h === result.maskHeight) {
+        workingMaskData = result.maskData
+      } else {
+        workingMaskData = downscaleMask(result.maskData, result.maskWidth, result.maskHeight, w, h)
+      }
+
+      store.setMask({
+        width: w,
+        height: h,
+        data: workingMaskData,
+      })
+
+      // Composite at working resolution
+      const resultCanvas = compositeResult(store.sourceImage, workingMaskData, w, h)
       store.setResultCanvas(resultCanvas)
       store.setProgress('', 0)
+      editor.isHeavyProcessing = false
     } catch (err: any) {
       store.setStage('ready')
       store.setProgress('', 0)

@@ -14,6 +14,8 @@ export const useMattingStore = defineStore('matting', () => {
 
   // mask
   const maskData = ref<MattingMaskData | null>(null)
+  const fullMaskData = ref<MattingMaskData | null>(null)
+  const maskEdited = ref(false)
   const resultCanvas = ref<HTMLCanvasElement | null>(null)
 
   // model
@@ -29,6 +31,7 @@ export const useMattingStore = defineStore('matting', () => {
   // tools
   const brush = ref<MattingBrush>({ size: 24, mode: 'remove' })
   const edgeSettings = ref<MattingEdgeSettings>({ feather: 0, expand: 0, contract: 0 })
+  const maskVersion = ref(0)
 
   // computed
   const hasMask = computed(() => maskData.value !== null)
@@ -42,12 +45,15 @@ export const useMattingStore = defineStore('matting', () => {
     sourceImageDataUrl.value = img.src
     imageSource.value = source
     maskData.value = null
+    fullMaskData.value = null
+    maskEdited.value = false
     resultCanvas.value = null
     stage.value = 'ready'
   }
 
   function setMask(data: MattingMaskData) {
     maskData.value = data
+    maskVersion.value++
     stage.value = 'mask_editing'
   }
 
@@ -67,6 +73,8 @@ export const useMattingStore = defineStore('matting', () => {
     sourceImage.value = null
     sourceImageDataUrl.value = ''
     maskData.value = null
+    fullMaskData.value = null
+    maskEdited.value = false
     resultCanvas.value = null
     stage.value = 'idle'
     progress.value = { message: '', percent: 0 }
@@ -76,10 +84,10 @@ export const useMattingStore = defineStore('matting', () => {
 
   return {
     sourceImage, sourceImageDataUrl, imageSource,
-    maskData, resultCanvas,
+    maskData, fullMaskData, maskEdited, resultCanvas,
     selectedModel, backend,
     stage, progress, inferenceTime,
-    brush, edgeSettings,
+    brush, edgeSettings, maskVersion,
     hasMask, isProcessing,
     lastError,
     setSourceImage, setMask, setResultCanvas,

@@ -167,11 +167,17 @@ export const useEditorStore = defineStore('editor', () => {
   const constrainToImage = ref(false)
   const showOriginal = ref(false)
 
+  // 单图层模式下强制约束裁剪框在图层内
+  const isSingleLayerMode = computed(() => layers.value.length === 1)
+
   // ---- layer arrangement ----
   const layerArrangeDirection = ref<'horizontal' | 'vertical'>('horizontal')
   const layerArrangeGap = ref(0)
   const layerInsertX = ref(0)
   const layerInsertY = ref(0)
+
+  // ---- heavy processing indicator ----
+  const isHeavyProcessing = ref(false)
 
   // ---- render trigger ----
   const canvasVersion = ref(0)
@@ -219,7 +225,8 @@ export const useEditorStore = defineStore('editor', () => {
     selectText, deleteText,
     activeTool, setTool,
     brushSettings, eraserSettings, magicWandTolerance,
-    constrainToImage, showOriginal,
+    constrainToImage, showOriginal, isSingleLayerMode,
+    isHeavyProcessing,
     canvasVersion, invalidateCanvas,
     hGuides, vGuides, addHGuide, addVGuide, removeHGuide, removeVGuide, clearGuides,
     layerArrangeDirection, layerArrangeGap,

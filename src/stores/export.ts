@@ -18,6 +18,13 @@ export const useExportStore = defineStore('export', () => {
   const batchFitMode = ref<BatchOutputFitMode>('cover')
   const batchFillColor = ref('#ffffff')
 
+  // AI upscale
+  const upscaleEnabled = ref(false)
+  const upscaleScale = ref(2) // 2× or 4×
+
+  // sharpening
+  const sharpenAmount = ref(0) // 0 = off, 50 = subtle, 100 = standard, 200 = strong
+
   // naming
   const filenamePattern = ref('{imageName}_{regionName}_{index:3}')
   const selectedPlatformPresetId = ref<string | null>(null)
@@ -35,6 +42,8 @@ export const useExportStore = defineStore('export', () => {
     customOutputSize,
     batchUseCustomSize, batchOutputWidth, batchOutputHeight,
     batchFitMode, batchFillColor,
+    upscaleEnabled, upscaleScale,
+    sharpenAmount,
     filenamePattern, selectedPlatformPresetId,
     applyPlatformPreset,
   }

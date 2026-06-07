@@ -4,10 +4,6 @@ import { useMattingStore } from '../../stores/matting'
 const store = useMattingStore()
 
 const emit = defineEmits<{
-  'export-png': []
-  'send-to-canvas': []
-  'run-inference': []
-  'cancel': []
   'undo': []
 }>()
 </script>
@@ -20,7 +16,11 @@ const emit = defineEmits<{
 
       <div class="slider-group">
         <label class="slider-label">
-          羽化 <span class="val">{{ store.edgeSettings.feather }}px</span>
+          <span class="label-with-tip">
+            羽化
+            <span class="tip-icon" title="对边缘进行高斯模糊，让抠图边缘过渡更加自然柔和，避免生硬的锯齿感">?</span>
+          </span>
+          <span class="val">{{ store.edgeSettings.feather }}px</span>
         </label>
         <input
           type="range" min="0" max="50"
@@ -31,7 +31,11 @@ const emit = defineEmits<{
 
       <div class="slider-group">
         <label class="slider-label">
-          扩展 <span class="val">{{ store.edgeSettings.expand }}px</span>
+          <span class="label-with-tip">
+            扩展
+            <span class="tip-icon" title="向外膨胀遮罩区域，扩大保留范围。可用于恢复被误删的边缘区域">?</span>
+          </span>
+          <span class="val">{{ store.edgeSettings.expand }}px</span>
         </label>
         <input
           type="range" min="0" max="30"
@@ -42,7 +46,11 @@ const emit = defineEmits<{
 
       <div class="slider-group">
         <label class="slider-label">
-          收缩 <span class="val">{{ store.edgeSettings.contract }}px</span>
+          <span class="label-with-tip">
+            收缩
+            <span class="tip-icon" title="向内收缩遮罩区域，缩小保留范围。可用于去除边缘残留的背景杂色">?</span>
+          </span>
+          <span class="val">{{ store.edgeSettings.contract }}px</span>
         </label>
         <input
           type="range" min="0" max="30"
@@ -52,41 +60,15 @@ const emit = defineEmits<{
       </div>
     </div>
 
-    <!-- Actions -->
+    <!-- Undo -->
     <div class="matting-section">
-      <div class="matting-section-title">操作</div>
-
-      <div class="action-list">
-        <button
-          class="action-btn"
-          :disabled="store.isProcessing"
-          @click="emit('undo')"
-        >
-          ↩ 撤销编辑
-        </button>
-        <button
-          class="action-btn"
-          :disabled="store.isProcessing"
-          @click="emit('run-inference')"
-        >
-          🔄 重新推理
-        </button>
-        <button class="action-btn" @click="emit('export-png')">
-          💾 导出透明 PNG
-        </button>
-        <button class="action-btn action-btn-accent" @click="emit('send-to-canvas')">
-          📤 发送到画布
-        </button>
-      </div>
-    </div>
-
-    <!-- Progress during processing -->
-    <div class="matting-section" v-if="store.isProcessing">
-      <div class="progress-bar">
-        <div class="progress-fill" :style="{ width: store.progress.percent + '%' }" />
-      </div>
-      <div class="progress-text">{{ store.progress.message }}</div>
-      <button class="action-btn cancel-btn" @click="emit('cancel')">取消</button>
+      <button
+        class="action-btn"
+        :disabled="store.isProcessing"
+        @click="emit('undo')"
+      >
+        ↩ 撤销编辑
+      </button>
     </div>
 
     <!-- Inference time -->
@@ -118,6 +100,20 @@ const emit = defineEmits<{
   font-size: 11px; color: var(--text-secondary);
   display: flex; align-items: center; justify-content: space-between;
 }
+.label-with-tip {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tip-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--bg-primary); color: var(--text-muted);
+  font-size: 9px; font-weight: 700; cursor: help;
+  border: 1px solid var(--border); line-height: 1;
+  transition: all 0.15s;
+}
+.tip-icon:hover {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
 .val { color: var(--accent); font-weight: 500; }
 
 .slider {
@@ -129,9 +125,6 @@ const emit = defineEmits<{
   border-radius: 50%; background: var(--accent); cursor: pointer;
 }
 
-.action-list {
-  display: flex; flex-direction: column; gap: 5px;
-}
 .action-btn {
   padding: 8px 12px; background: var(--bg-primary); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -140,19 +133,6 @@ const emit = defineEmits<{
 }
 .action-btn:hover:not(:disabled) { border-color: var(--text-muted); }
 .action-btn:disabled { opacity: 0.4; cursor: default; }
-.action-btn-accent {
-  background: var(--accent); color: #fff; border-color: var(--accent);
-}
-.action-btn-accent:hover:not(:disabled) { opacity: 0.9; }
-.cancel-btn { color: #ef5350; border-color: rgba(239,83,80,0.3); }
 
-.progress-bar {
-  height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden;
-}
-.progress-fill {
-  height: 100%; background: var(--accent); border-radius: 2px;
-  transition: width 0.3s ease;
-}
-.progress-text { font-size: 11px; color: var(--text-secondary); }
 .info-text { font-size: 11px; color: var(--text-muted); }
 </style>

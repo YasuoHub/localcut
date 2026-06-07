@@ -21,7 +21,7 @@ const editor = useEditorStore()
 const exp = useExportStore()
 const history = useHistoryStore()
 
-const { exportSingleRegion, exportRegions, downloadZip } = useExport()
+const { exportSingleRegion, exportRegions, downloadZip, computeSourcePixelRatio } = useExport()
 
 // Watch platform preset to auto-fill size
 watch(() => exp.selectedPlatformPresetId, (id) => {
@@ -166,22 +166,74 @@ function onFontColorInput() {
   editor.invalidateCanvas()
 }
 
+// ---- global export state ----
+const isExporting = ref(false)
+const exportStatusText = ref('')
+
 // ---- single export ----
 const exportingSingle = ref(false)
+let sharedUpscaleCleanup: (() => void) | null = null
+
+async function createUpscaleFn(): Promise<((canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>) | undefined> {
+  if (!exp.upscaleEnabled) return undefined
+  const { loadModel, upscaleImage, destroy, progress } = (await import('../composables/useSuperResolution')).useSuperResolution()
+  sharedUpscaleCleanup = destroy
+
+  exportStatusText.value = '加载超分模型...'
+  await loadModel()
+  exportStatusText.value = ''
+
+  // Sync the worker progress ref into status text via polling
+  let stopPolling: (() => void) | null = null
+  const startPolling = () => {
+    const timer = setInterval(() => {
+      if (progress.value.message) {
+        exportStatusText.value = progress.value.message
+      }
+    }, 50)
+    stopPolling = () => clearInterval(timer)
+  }
+
+  return async (canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext('2d')!
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    startPolling()
+    const resultData = await upscaleImage(imgData)
+    stopPolling?.()
+    stopPolling = null
+    const result = document.createElement('canvas')
+    result.width = resultData.width
+    result.height = resultData.height
+    result.getContext('2d')!.putImageData(resultData, 0, 0)
+    return result
+  }
+}
+
 async function handleExportSingle() {
   const region = editor.selectedRegion
   if (!editor.imageLoaded || !region) return
+  isExporting.value = true
   exportingSingle.value = true
+  exportStatusText.value = '正在导出...'
   try {
+    const upscaleFn = await createUpscaleFn()
     await exportSingleRegion(
       editor.layers, region,
       exp.exportFormat, exp.exportQuality,
       exp.exportOutputWidth, exp.exportOutputHeight, exp.exportDpr,
       editor.showOriginal,
       editor.textAnnotations,
+      upscaleFn,
+      exp.sharpenAmount,
     )
   } catch (err) { console.error('Export failed:', err) }
-  finally { exportingSingle.value = false }
+  finally {
+    isExporting.value = false
+    exportingSingle.value = false
+    sharedUpscaleCleanup?.()
+    sharedUpscaleCleanup = null
+    exportStatusText.value = ''
+  }
 }
 
 // ---- preview ----
@@ -234,6 +286,26 @@ function handleRotate() {
 const sortedRegions = computed(() => [...editor.regions].reverse())
 const checkedCount = computed(() => editor.selectedRegionIds.size)
 
+const exportResolutionInfo = computed(() => {
+  const region = editor.selectedRegion
+  if (!region || !editor.imageLoaded) return null
+  const srcRatio = computeSourcePixelRatio(editor.layers, region, exp.exportOutputWidth, exp.exportOutputHeight)
+  const outW = exp.exportOutputWidth ?? region.width
+  const outH = exp.exportOutputHeight ?? region.height
+  const pw = Math.round(outW * exp.exportDpr)
+  const ph = Math.round(outH * exp.exportDpr)
+  const effectiveDpr = Math.min(exp.exportDpr, Math.max(1, Math.round(srcRatio * 2 * 10) / 10))
+  const effectivePw = Math.round(outW * effectiveDpr)
+  const effectivePh = Math.round(outH * effectiveDpr)
+  const isOverUpscale = srcRatio < 0.5
+  const isDprCapped = effectiveDpr < exp.exportDpr
+  let srcLabel = `${Math.round(region.width)}×${Math.round(region.height)}`
+  if (srcRatio >= 1) srcLabel += ' (充足)'
+  else if (srcRatio >= 0.5) srcLabel += ' (一般)'
+  else srcLabel += ' (不足)'
+  return { outW, outH, pw, ph, effectiveDpr, effectivePw, effectivePh, isOverUpscale, isDprCapped, srcRatio, srcLabel }
+})
+
 function selectRegion(id: string, _e: MouseEvent) {
   editor.selectRegion(id)
   editor.activeTool = 'select'
@@ -275,7 +347,9 @@ async function handleBatchExport() {
   if (!editor.imageLoaded || editor.regions.length === 0) return
   const toExport = checkedRegions()
   if (toExport.length === 0) return
+  isExporting.value = true
   exporting.value = true
+  exportStatusText.value = toExport.length > 1 ? `正在导出 ${toExport.length} 项...` : '正在导出...'
   try {
     const imageName = editor.activeLayer?.name?.replace(/\.[^.]+$/, '') ?? 'image'
     const namingOptions = {
@@ -287,6 +361,8 @@ async function handleBatchExport() {
     const fit = exp.batchUseCustomSize ? exp.batchFitMode : undefined
     const fill = exp.batchFillColor
 
+    const upscaleFn = await createUpscaleFn()
+
     const blob = await exportRegions(
       editor.layers, toExport,
       exp.exportFormat, exp.exportQuality,
@@ -295,10 +371,18 @@ async function handleBatchExport() {
       editor.textAnnotations,
       namingOptions,
       bw, bh, fit, fill,
+      upscaleFn,
+      exp.sharpenAmount,
     )
     downloadZip(blob)
   } catch (err) { console.error('Export failed:', err) }
-  finally { exporting.value = false }
+  finally {
+    isExporting.value = false
+    exporting.value = false
+    sharedUpscaleCleanup?.()
+    sharedUpscaleCleanup = null
+    exportStatusText.value = ''
+  }
 }
 </script>
 
@@ -386,7 +470,7 @@ async function handleBatchExport() {
       </div>
       <div class="btn-row">
         <button class="btn-primary preview-single-btn" @click="handlePreviewSingle">预览</button>
-        <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? '导出中...' : '导出此区域' }}</button>
+        <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? (exportStatusText || '导出中...') : '导出此区域' }}</button>
       </div>
     </section>
 
@@ -445,6 +529,22 @@ async function handleBatchExport() {
       </div>
       <div class="field" v-if="exp.exportFormat === 'jpeg' || exp.exportFormat === 'webp'"><label>质量: {{ exp.exportQuality }}%</label><input type="range" min="10" max="100" v-model.number="exp.exportQuality" /></div>
       <div class="field"><label>设备像素比: {{ exp.exportDpr }}x</label><input type="range" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" /></div>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="exp.upscaleEnabled" />AI 超分 {{ exp.upscaleScale }}×
+        </label>
+        <div class="upscale-hint" v-if="exp.upscaleEnabled">首次需下载模型 ~7.5 MB，之后缓存</div>
+      <div class="field">
+        <label>锐化强度: {{ exp.sharpenAmount }}%</label>
+        <input type="range" min="0" max="200" step="10" v-model.number="exp.sharpenAmount" />
+      </div>
+      </div>
+      <div v-if="exportResolutionInfo" class="export-res-info">
+        <div class="res-row">输出: <strong>{{ exportResolutionInfo.effectivePw }} × {{ exportResolutionInfo.effectivePh }}</strong> px</div>
+        <div class="res-row">源图: {{ exportResolutionInfo.srcLabel }}</div>
+        <div v-if="exportResolutionInfo.isDprCapped" class="res-warn">⚠ DPR 已从 {{ exp.exportDpr }}x 限制为 {{ exportResolutionInfo.effectiveDpr }}x（源图像素不足）</div>
+        <div v-else-if="exportResolutionInfo.isOverUpscale" class="res-warn">⚠ 源图像素不足，建议降低 DPR</div>
+      </div>
     </section>
 
     <!-- Batch size -->
@@ -478,7 +578,7 @@ async function handleBatchExport() {
       <div class="btn-row">
         <button class="btn-primary preview-batch-btn" :disabled="editor.regions.length === 0" @click="handlePreviewBatch">批量预览</button>
         <button class="btn-primary export-btn" :disabled="exporting || editor.regions.length === 0" @click="handleBatchExport">
-          {{ exporting ? '导出中...' : `批量导出 ${checkedCount || editor.regions.length} 项` }}
+          {{ exporting ? (exportStatusText || '导出中...') : `批量导出 ${checkedCount || editor.regions.length} 项` }}
         </button>
       </div>
     </section>
@@ -486,6 +586,16 @@ async function handleBatchExport() {
   </aside>
   <PreviewModal ref="previewModalRef" />
   <ImageZoomModal :region="previewZoomRegion" v-model:show="previewZoomShow" />
+
+  <!-- Export loading overlay -->
+  <Teleport to="body">
+    <div v-if="isExporting" class="export-overlay">
+      <div class="export-overlay-card">
+        <div class="export-spinner"></div>
+        <div class="export-overlay-text">{{ exportStatusText || '正在导出...' }}</div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -564,4 +674,34 @@ async function handleBatchExport() {
   cursor: pointer; white-space: nowrap;
 }
 .tf-btn:hover { border-color: var(--accent); color: var(--accent); }
+.export-res-info {
+  background: var(--bg-primary); border-radius: var(--radius); padding: 8px; margin-top: 4px;
+}
+.res-row { font-size: 11px; color: var(--text-secondary); padding: 1px 0; }
+.res-row strong { color: var(--text-primary); }
+.res-warn { font-size: 10px; color: #e5a400; margin-top: 4px; }
+.upscale-hint { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+/* export overlay */
+.export-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: all; user-select: none;
+}
+.export-overlay-card {
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: 12px; padding: 32px 40px;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+  min-width: 240px;
+}
+.export-overlay-text { font-size: 14px; color: var(--text-primary); text-align: center; }
+.export-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: export-spin 0.8s linear infinite;
+}
+@keyframes export-spin { to { transform: rotate(360deg); } }
 </style>

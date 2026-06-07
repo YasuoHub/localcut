@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 import type { CropRegion } from '../types'
 import { useExport } from '../composables/useExport'
 import { useEditorStore } from '../stores/editor'
@@ -23,13 +23,13 @@ function previewRegions(): CropRegion[] {
   return editor.regions
 }
 
-function generateThumb(region: CropRegion): string {
+async function generateThumb(region: CropRegion): Promise<string> {
   const w = region.width
   const h = region.height
   const maxDim = 200
   let tw = w, th = h
   if (w > h) { tw = maxDim; th = Math.round(h * maxDim / w) } else { th = maxDim; tw = Math.round(w * maxDim / h) }
-  const canvas = renderRegionToCanvas(
+  const canvas = await renderRegionToCanvas(
     editor.layers, region,
     tw, th, 1, editor.showOriginal,
     editor.textAnnotations,
@@ -37,20 +37,21 @@ function generateThumb(region: CropRegion): string {
   return canvas.toDataURL('image/png')
 }
 
-function open() {
+async function open() {
   const regions = previewRegions()
   loading.value = true
   previews.value = []
   show.value = true
-  requestAnimationFrame(() => {
-    try {
-      previews.value = regions.map(r => ({
-        regionId: r.id,
-        name: r.name,
-        dataUrl: generateThumb(r),
-      }))
-    } finally { loading.value = false }
-  })
+  // 确保 loading 先渲染到 DOM
+  await nextTick()
+  await new Promise(resolve => requestAnimationFrame(resolve))
+  try {
+    previews.value = await Promise.all(regions.map(async r => ({
+      regionId: r.id,
+      name: r.name,
+      dataUrl: await generateThumb(r),
+    })))
+  } finally { loading.value = false }
 }
 
 function close() { show.value = false }

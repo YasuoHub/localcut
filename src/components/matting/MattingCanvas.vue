@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useMattingStore } from '../../stores/matting'
 import { useMaskEditing } from '../../composables/useMaskEditing'
 
@@ -14,9 +14,37 @@ const mouseCanvasPos = ref({ x: 0, y: 0 })
 let imageBounds = { dx: 0, dy: 0, drawW: 0, drawH: 0, scale: 1 }
 let rendering = false // prevent re-entrant renders
 
-const { startBrush, moveBrush, endBrush, undoMaskEdit, refineEdges } = useMaskEditing(canvasRef)
+// Zoom & pan state
+let zoom = 1
+let offsetX = 0
+let offsetY = 0
+let baseScale = 1
+let containerW = 0
+let containerH = 0
+const isPanning = ref(false)
+const spaceHeld = ref(false)
+let panStartMouseX = 0
+let panStartMouseY = 0
+let panStartOffsetX = 0
+let panStartOffsetY = 0
+const MIN_ZOOM = 0.1
+const MAX_ZOOM = 20
+const zoomPercent = computed(() => Math.round(imageBounds.scale * 100) + '%')
+
+const { isProcessingEdges, preInit, startBrush, moveBrush, endBrush, undoMaskEdit, redoMaskEdit, refineEdges, destroy: destroyEditor } = useMaskEditing(canvasRef)
 
 let resizeObserver: ResizeObserver | null = null
+
+function resetView() {
+  zoom = 1
+  offsetX = 0
+  offsetY = 0
+  requestAnimationFrame(render)
+}
+
+function handleResetClick() {
+  resetView()
+}
 
 function drawCheckerboard(ctx: CanvasRenderingContext2D, w: number, h: number, size = 12) {
   for (let y = 0; y < h; y += size) {
@@ -27,19 +55,26 @@ function drawCheckerboard(ctx: CanvasRenderingContext2D, w: number, h: number, s
   }
 }
 
-function computeImageBounds(containerW: number, containerH: number) {
+function computeImageBounds(cw: number, ch: number) {
   if (!store.sourceImage) return
+  containerW = cw
+  containerH = ch
   const img = store.sourceImage
-  const maxW = containerW * 0.9
-  const maxH = containerH * 0.9
-  let drawW = img.naturalWidth
-  let drawH = img.naturalHeight
-  const scale = Math.min(maxW / drawW, maxH / drawH, 1)
-  drawW *= scale
-  drawH *= scale
+
+  // Use working-resolution dimensions when mask exists,
+  // so brush coordinates map correctly to the mask canvas.
+  const imgW = store.maskData ? store.maskData.width : img.naturalWidth
+  const imgH = store.maskData ? store.maskData.height : img.naturalHeight
+
+  baseScale = Math.min(cw / imgW, ch / imgH, 1)
+  const scale = baseScale * zoom
+  const drawW = imgW * scale
+  const drawH = imgH * scale
+  const defaultDx = (cw - drawW) / 2
+  const defaultDy = (ch - drawH) / 2
   imageBounds = {
-    dx: (containerW - drawW) / 2,
-    dy: (containerH - drawH) / 2,
+    dx: defaultDx + offsetX,
+    dy: defaultDy + offsetY,
     drawW,
     drawH,
     scale,
@@ -47,10 +82,24 @@ function computeImageBounds(containerW: number, containerH: number) {
 }
 
 function screenToImage(canvasX: number, canvasY: number): { x: number; y: number } | null {
-  const { dx, dy, drawW, drawH, scale } = imageBounds
-  const relX = (canvasX - dx) / scale
-  const relY = (canvasY - dy) / scale
-  if (relX < 0 || relX >= drawW / scale || relY < 0 || relY >= drawH / scale) {
+  // Compute display transform directly from store content dimensions,
+  // avoiding any dependency on potentially-stale imageBounds.
+  if (!containerW || !containerH) return null
+
+  const contentW = store.maskData?.width ?? store.sourceImage?.naturalWidth
+  const contentH = store.maskData?.height ?? store.sourceImage?.naturalHeight
+  if (!contentW || !contentH) return null
+
+  const contentScale = Math.min(containerW / contentW, containerH / contentH, 1) * zoom
+  const contentDrawW = contentW * contentScale
+  const contentDrawH = contentH * contentScale
+  const contentDx = (containerW - contentDrawW) / 2 + offsetX
+  const contentDy = (containerH - contentDrawH) / 2 + offsetY
+
+  const relX = (canvasX - contentDx) / contentScale
+  const relY = (canvasY - contentDy) / contentScale
+
+  if (relX < 0 || relX >= contentW || relY < 0 || relY >= contentH) {
     return null
   }
   return { x: Math.round(relX), y: Math.round(relY) }
@@ -67,8 +116,13 @@ function render() {
 
     const rect = container.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
-    canvas.width = rect.width * dpr
-    canvas.height = rect.height * dpr
+    const newW = rect.width * dpr
+    const newH = rect.height * dpr
+    // Only resize when dimensions actually changed — avoids expensive buffer reallocation
+    if (canvas.width !== newW || canvas.height !== newH) {
+      canvas.width = newW
+      canvas.height = newH
+    }
     canvas.style.width = rect.width + 'px'
     canvas.style.height = rect.height + 'px'
 
@@ -114,10 +168,10 @@ function render() {
       ctx.drawImage(img, dx, dy, drawW, drawH)
     }
 
-    // Brush preview ring (shows mode + size visually)
+    // Brush preview ring (scaled by zoom for visual accuracy)
     if (showBrushCursor.value && (store.stage === 'mask_editing' || store.stage === 'done')) {
       const { x, y } = mouseCanvasPos.value
-      const brushRadius = store.brush.size / 2
+      const brushRadius = (store.brush.size / 2) * imageBounds.scale
       const isKeep = store.brush.mode === 'keep'
       ctx.beginPath()
       ctx.arc(x, y, brushRadius, 0, Math.PI * 2)
@@ -130,8 +184,10 @@ function render() {
       ctx.fill()
     }
 
+    // Zoom indicator (rendered as HTML overlay for proper click handling)
+
     // Processing overlay
-    if (store.isProcessing) {
+    if (store.isProcessing || isProcessingEdges.value) {
       const cx = rect.width / 2
       const cy = rect.height / 2
 
@@ -153,9 +209,13 @@ function render() {
       ctx.fillStyle = '#fff'
       ctx.font = '600 15px sans-serif'
       ctx.textAlign = 'center'
-      ctx.fillText(store.progress.message, cx, cy + 12)
+      if (store.isProcessing) {
+        ctx.fillText(store.progress.message, cx, cy + 12)
+      } else {
+        ctx.fillText('应用边缘精修...', cx, cy + 12)
+      }
 
-      // Progress bar
+      // Progress bar (only for model loading/inference)
       if (store.progress.percent > 0) {
         const barW = 200
         const barH = 4
@@ -177,7 +237,7 @@ function render() {
   }
 }
 
-// Mouse event handlers for brush editing
+// Mouse event handlers
 function getCanvasPos(e: MouseEvent): { x: number; y: number } {
   const canvas = canvasRef.value
   if (!canvas) return { x: 0, y: 0 }
@@ -187,26 +247,56 @@ function getCanvasPos(e: MouseEvent): { x: number; y: number } {
 
 function handleMouseDown(e: MouseEvent) {
   if (store.stage !== 'mask_editing' && store.stage !== 'done') return
-  if (e.button !== 0) return
-  const pos = getCanvasPos(e)
-  const imgPos = screenToImage(pos.x, pos.y)
-  if (!imgPos) return
-  isMouseDown.value = true
-  startBrush(imgPos.x, imgPos.y)
+
+  // Middle button → pan
+  if (e.button === 1) {
+    e.preventDefault()
+    startPan(e)
+    return
+  }
+
+  // Left button
+  if (e.button === 0) {
+    // Space+left → pan
+    if (spaceHeld.value) {
+      startPan(e)
+      return
+    }
+    // Normal left click → brush
+    const pos = getCanvasPos(e)
+    const imgPos = screenToImage(pos.x, pos.y)
+    if (!imgPos) return
+    isMouseDown.value = true
+    startBrush(imgPos.x, imgPos.y)
+  }
 }
 
 function handleMouseMove(e: MouseEvent) {
   const pos = getCanvasPos(e)
   mouseCanvasPos.value = pos
+
+  if (isPanning.value) {
+    offsetX = panStartOffsetX + (e.clientX - panStartMouseX)
+    offsetY = panStartOffsetY + (e.clientY - panStartMouseY)
+    requestAnimationFrame(render)
+    return
+  }
+
   const imgPos = screenToImage(pos.x, pos.y)
   showBrushCursor.value = imgPos !== null && (store.stage === 'mask_editing' || store.stage === 'done')
-  if (showBrushCursor.value) requestAnimationFrame(render)
   if (isMouseDown.value && imgPos) {
     moveBrush(imgPos.x, imgPos.y)
+    // Cursor render deferred to flushBrushEdits → render() — avoids extra rAF hop
+  } else if (showBrushCursor.value) {
+    requestAnimationFrame(render)
   }
 }
 
-function handleMouseUp() {
+function handleMouseUp(e: MouseEvent) {
+  if (isPanning.value) {
+    endPan()
+    return
+  }
   if (isMouseDown.value) {
     endBrush()
     isMouseDown.value = false
@@ -215,10 +305,81 @@ function handleMouseUp() {
 
 function handleMouseLeave() {
   showBrushCursor.value = false
+  if (isPanning.value) {
+    endPan()
+  }
   if (isMouseDown.value) {
     endBrush()
     isMouseDown.value = false
   }
+}
+
+// Pan
+function startPan(e: MouseEvent) {
+  isPanning.value = true
+  panStartMouseX = e.clientX
+  panStartMouseY = e.clientY
+  panStartOffsetX = offsetX
+  panStartOffsetY = offsetY
+}
+
+function endPan() {
+  isPanning.value = false
+}
+
+// Zoom
+function handleWheel(e: WheelEvent) {
+  if (store.stage !== 'mask_editing' && store.stage !== 'done') return
+  e.preventDefault()
+
+  const pos = getCanvasPos(e)
+  const { dx, dy, scale: oldScale } = imageBounds
+
+  // Image point under cursor before zoom
+  const imgX = (pos.x - dx) / oldScale
+  const imgY = (pos.y - dy) / oldScale
+
+  const factor = e.deltaY < 0 ? 1.15 : 0.85
+  const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * factor))
+  const newScale = baseScale * newZoom
+
+  if (!store.sourceImage) return
+  const imgW = store.maskData ? store.maskData.width : store.sourceImage.naturalWidth
+  const imgH = store.maskData ? store.maskData.height : store.sourceImage.naturalHeight
+  const newDrawW = imgW * newScale
+  const newDrawH = imgH * newScale
+  const newDefaultDx = (containerW - newDrawW) / 2
+  const newDefaultDy = (containerH - newDrawH) / 2
+
+  // Adjust offset so the same image point stays under cursor
+  offsetX = pos.x - newDefaultDx - imgX * newScale
+  offsetY = pos.y - newDefaultDy - imgY * newScale
+  zoom = newZoom
+
+  requestAnimationFrame(render)
+}
+
+// Keyboard handlers for space+pan
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.code === 'Space' && (store.stage === 'mask_editing' || store.stage === 'done')) {
+    // Don't trigger if user is typing in an input
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+    e.preventDefault()
+    spaceHeld.value = true
+  }
+}
+
+function handleKeyUp(e: KeyboardEvent) {
+  if (e.code === 'Space') {
+    spaceHeld.value = false
+    if (isPanning.value) {
+      endPan()
+    }
+  }
+}
+
+function handleDisplayUpdate() {
+  render()
 }
 
 onMounted(() => {
@@ -226,11 +387,18 @@ onMounted(() => {
     resizeObserver = new ResizeObserver(() => render())
     resizeObserver.observe(containerRef.value)
   }
+  canvasRef.value?.addEventListener('matting-display-update', handleDisplayUpdate)
+  window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('keyup', handleKeyUp)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   cancelAnimationFrame(processingAnimFrame)
+  destroyEditor()
+  canvasRef.value?.removeEventListener('matting-display-update', handleDisplayUpdate)
+  window.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('keyup', handleKeyUp)
 })
 
 // Debounced edge settings sync (avoids heavy processing on every slider tick)
@@ -251,14 +419,31 @@ watch(
   () => { requestAnimationFrame(render) },
 )
 
+// Pre-initialize mask canvases when inference completes,
+// so the first brush stroke doesn't pay lazy-init cost.
+// Only reset zoom/pan on new inference (maskVersion bump).
+let lastMaskVersion = 0
+watch(
+  () => store.maskData,
+  (maskData) => {
+    if (maskData) {
+      if (store.maskVersion !== lastMaskVersion) {
+        lastMaskVersion = store.maskVersion
+        resetView()
+      }
+      requestAnimationFrame(() => preInit())
+    }
+  },
+)
+
 // Continuous render loop for spinner animation during processing
 let processingAnimFrame = 0
 watch(
-  () => store.isProcessing,
-  (processing) => {
-    if (processing) {
+  [() => store.isProcessing, isProcessingEdges],
+  ([processing, processingEdges]) => {
+    if (processing || processingEdges) {
       const loop = () => {
-        if (!store.isProcessing) return
+        if (!store.isProcessing && !isProcessingEdges.value) return
         render()
         processingAnimFrame = requestAnimationFrame(loop)
       }
@@ -269,7 +454,7 @@ watch(
   },
 )
 
-defineExpose({ render, undoMaskEdit })
+defineExpose({ render, undoMaskEdit, redoMaskEdit })
 </script>
 
 <template>
@@ -278,14 +463,25 @@ defineExpose({ render, undoMaskEdit })
       ref="canvasRef"
       class="matting-preview-canvas"
       :class="{
-        'brush-cursor-keep': showBrushCursor && store.brush.mode === 'keep' && store.stage === 'mask_editing',
-        'brush-cursor-remove': showBrushCursor && store.brush.mode === 'remove' && store.stage === 'mask_editing',
+        'cursor-grab': spaceHeld && !isPanning,
+        'cursor-grabbing': isPanning,
+        'brush-cursor-keep': showBrushCursor && store.brush.mode === 'keep' && store.stage === 'mask_editing' && !isPanning && !spaceHeld,
+        'brush-cursor-remove': showBrushCursor && store.brush.mode === 'remove' && store.stage === 'mask_editing' && !isPanning && !spaceHeld,
       }"
       @mousedown="handleMouseDown"
       @mousemove="handleMouseMove"
       @mouseup="handleMouseUp"
       @mouseleave="handleMouseLeave"
+      @wheel.prevent="handleWheel"
     />
+    <div
+      v-if="store.sourceImage && (store.stage === 'mask_editing' || store.stage === 'done')"
+      class="zoom-indicator"
+      title="点击重置缩放"
+      @click="handleResetClick"
+    >
+      {{ zoomPercent }}
+    </div>
   </div>
 </template>
 
@@ -297,4 +493,16 @@ defineExpose({ render, undoMaskEdit })
 .matting-preview-canvas { display: block; }
 .brush-cursor-keep { cursor: crosshair; }
 .brush-cursor-remove { cursor: none; }
+.cursor-grab { cursor: grab; }
+.cursor-grabbing { cursor: grabbing; }
+
+.zoom-indicator {
+  position: absolute; bottom: 8px; right: 8px;
+  padding: 3px 10px; border-radius: 4px;
+  background: rgba(0,0,0,0.6); color: rgba(255,255,255,0.7);
+  font-size: 11px; font-weight: 600; cursor: pointer;
+  user-select: none; z-index: 2;
+  transition: background 0.15s;
+}
+.zoom-indicator:hover { background: rgba(0,0,0,0.8); color: #fff; }
 </style>

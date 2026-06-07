@@ -8,7 +8,32 @@ const editor = useEditorStore()
 const emit = defineEmits<{
   'upload-image': [files: File[]]
   'open-matting': []
+  'create-preset': [preset: PresetCropSize]
 }>()
+
+function selectPreset(preset: PresetCropSize) { emit('create-preset', preset) }
+
+interface PresetCropSize {
+  id: string
+  name: string
+  width: number
+  height: number
+}
+
+const presetCropSizes: PresetCropSize[] = [
+  { id: 'free', name: '自由裁剪', width: 0, height: 0 },
+  { id: 'wechat_cover', name: '公众号首图', width: 900, height: 383 },
+  { id: 'wechat_secondary', name: '公众号次图', width: 200, height: 200 },
+  { id: 'moments_cover', name: '朋友圈封面', width: 1080, height: 1080 },
+  { id: 'desktop_wallpaper', name: '电脑壁纸', width: 1920, height: 1080 },
+  { id: 'logo_design', name: 'Logo 设计', width: 500, height: 500 },
+  { id: 'square_main', name: '方形主图', width: 800, height: 800 },
+  { id: 'vertical_main', name: '竖版主图', width: 800, height: 1200 },
+  { id: 'pdd_store', name: '拼多多店铺首页', width: 750, height: 1000 },
+  { id: 'photo_1r', name: '标准 1 寸 / 1R', width: 295, height: 413 },
+  { id: 'photo_2r', name: '标准 2 寸 / 2R', width: 413, height: 626 },
+  { id: 'id_card', name: '二代身份证', width: 358, height: 441 },
+]
 
 const tools: { id: ToolType; label: string; icon: string }[] = [
   { id: 'select', label: '选择', icon: '⊟' },
@@ -71,6 +96,21 @@ function handleFileChange(e: Event) {
       </div>
     </section>
 
+    <section v-if="editor.activeTool === 'rect'" class="section preset-section">
+      <div class="section-title">预设尺寸</div>
+      <div class="preset-list">
+        <button
+          v-for="preset in presetCropSizes" :key="preset.id"
+          class="preset-btn btn-ghost"
+          :title="preset.name"
+          @click="selectPreset(preset)"
+        >
+          <span class="preset-name">{{ preset.name }}</span>
+          <span v-if="preset.width > 0" class="preset-size">{{ preset.width }}×{{ preset.height }}</span>
+        </button>
+      </div>
+    </section>
+
     <section class="section text-section" v-if="editor.textAnnotations.length > 0">
       <div class="section-title">文字 <span class="count">{{ editor.textAnnotations.length }}</span></div>
       <div class="text-list scrollbar">
@@ -118,4 +158,16 @@ function handleFileChange(e: Event) {
 .text-item.selected { background: rgba(79, 195, 247, 0.1); outline: 1px solid rgba(79, 195, 247, 0.3); }
 .text-icon { font-size: 13px; font-weight: 700; width: 18px; text-align: center; flex-shrink: 0; color: var(--accent); }
 .text-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.preset-section { max-height: 260px; display: flex; flex-direction: column; }
+.preset-section .section-title { flex-shrink: 0; }
+.preset-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; }
+.preset-btn {
+  display: flex; flex-direction: column; align-items: flex-start;
+  padding: 6px 8px; width: 100%; gap: 1px;
+  text-align: left; font-size: 11px;
+}
+.preset-btn:hover { background: var(--bg-hover); }
+.preset-name { color: var(--text-primary); }
+.preset-size { font-size: 10px; color: var(--text-muted); }
 </style>
