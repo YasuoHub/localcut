@@ -242,6 +242,80 @@ function isSegmentCurved(
 }
 
 /**
+ * Detect if a closed contour is a rounded rectangle (or regular rectangle).
+ * Uses "longest straight run" analysis: finds the longest consecutive segment
+ * where cumulative turning angle stays below 8 degrees. A rounded rectangle has
+ * long straight edges (typically >12% of contour each); a circle's "straight"
+ * runs are negligible (<3% of contour regardless of point count).
+ */
+function detectRoundRect(
+  points: { x: number; y: number }[],
+): { shape: 'roundrect'; cx: number; cy: number; rx: number; ry: number } | null {
+  if (points.length < 8) return null
+
+  const n = points.length
+
+  // Compute per-vertex turning angles
+  const turnAngles: number[] = []
+  for (let i = 0; i < n; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % n]
+    const c = points[(i + 2) % n]
+    const angle1 = Math.atan2(b.y - a.y, b.x - a.x)
+    const angle2 = Math.atan2(c.y - b.y, c.x - b.x)
+    let da = angle1 - angle2
+    while (da > Math.PI) da -= 2 * Math.PI
+    while (da < -Math.PI) da += 2 * Math.PI
+    turnAngles.push(Math.abs(da))
+  }
+
+  // Sliding window: find longest run with cumulative turning angle < 8 degrees.
+  // Double the array to handle runs that wrap around the contour.
+  const cumThreshold = 8 * Math.PI / 180
+  const extended = [...turnAngles, ...turnAngles]
+  let longestRun = 0
+  let right = 0
+  let cumAngle = 0
+
+  for (let left = 0; left < n; left++) {
+    while (right < left + n && cumAngle + extended[right] < cumThreshold) {
+      cumAngle += extended[right]
+      right++
+    }
+    longestRun = Math.max(longestRun, right - left)
+    if (right > left) {
+      cumAngle -= extended[left]
+    } else {
+      right = left + 1
+      cumAngle = 0
+    }
+  }
+
+  const straightRatio = longestRun / n
+
+  // A circle's longest "straight" run is ~n * threshold/(2π) ≈ 2.2% of contour.
+  // A rounded rectangle's straight edge is typically 15-40% of contour.
+  // 12% threshold cleanly separates the two.
+  if (straightRatio < 0.12) return null
+
+  // Compute bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of points) {
+    if (p.x < minX) minX = p.x
+    if (p.x > maxX) maxX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  const rx = (maxX - minX) / 2
+  const ry = (maxY - minY) / 2
+
+  return { shape: 'roundrect', cx, cy, rx: Math.max(rx, 1), ry: Math.max(ry, 1) }
+}
+
+/**
  * Detect if a closed contour is approximately a circle/ellipse.
  * Returns { shape, rx, ry } or null if not circular enough.
  */
@@ -297,7 +371,7 @@ export function magicWandSelect(
   seedY: number,
   tolerance: number,
   simplifyEpsilon = 1.5,
-): { points: { x: number; y: number }[]; shape?: 'circle'; minX: number; minY: number; width: number; height: number } | null {
+): { points: { x: number; y: number }[]; shape?: 'circle' | 'roundrect'; minX: number; minY: number; width: number; height: number } | null {
   const fill = floodFill(imageData, seedX, seedY, tolerance)
   if (!fill) return null
 
@@ -306,6 +380,12 @@ export function magicWandSelect(
 
   // moving-average smooth
   const smoothed = smoothMovingAverage(contour, 2)
+
+  // try to detect rounded rectangle first (takes priority over circle)
+  const roundRect = detectRoundRect(smoothed)
+  if (roundRect) {
+    return { points: [], shape: 'roundrect', minX: roundRect.cx - roundRect.rx, minY: roundRect.cy - roundRect.ry, width: roundRect.rx * 2, height: roundRect.ry * 2 }
+  }
 
   // try to detect circle/ellipse
   const circle = detectCircle(smoothed, 0.15)

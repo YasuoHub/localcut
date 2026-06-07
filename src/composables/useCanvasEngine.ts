@@ -47,6 +47,7 @@ export function useCanvasEngine(
   textAnnotations: TextAnnotation[],
   selectedTextId: Ref<string | null>,
   constrainToImage: Ref<boolean>,
+  isSingleLayerMode: Ref<boolean>,
   magicWandTolerance: Ref<number>,
   showOriginal: Ref<boolean>,
   layers: Ref<ImageLayer[]>,
@@ -55,6 +56,7 @@ export function useCanvasEngine(
   hGuides: Ref<number[]>,
   vGuides: Ref<number[]>,
   selectedLayerIds: Ref<Set<string>>,
+  isHeavyProcessing: Ref<boolean>,
   removeHGuide?: (y: number) => void,
   removeVGuide?: (x: number) => void,
   snapshot?: () => void,
@@ -214,7 +216,8 @@ export function useCanvasEngine(
 
   function clampToImage(x: number, y: number, w: number, h: number) {
     const img = getActiveImage()
-    if (!img || !constrainToImage.value) return { x, y, width: w, height: h }
+    const shouldConstrain = constrainToImage.value && isSingleLayerMode.value
+    if (!img || !shouldConstrain) return { x, y, width: w, height: h }
     const iw = img.naturalWidth
     const ih = img.naturalHeight
     let nx = clamp(x, 0, iw - 1)
@@ -355,7 +358,7 @@ export function useCanvasEngine(
           const canvas = canvasRef.value!
           const ctx = canvas.getContext('2d')!
           ctx.save()
-          const radius = r.borderRadius ?? Math.min(w, h) * 0.2
+          const radius = r.borderRadius != null ? r.borderRadius * view.scale : Math.min(w, h) * 0.2
           ctx.beginPath()
           ctx.roundRect(cx - w / 2, cy - h / 2, w, h, radius)
           const inside = ctx.isPointInPath(sx, sy)
@@ -368,7 +371,7 @@ export function useCanvasEngine(
         const ctx = canvas.getContext('2d')!
         ctx.save()
         const sp = screenPoints(r)
-        drawShapePath(ctx, r.shape, cx, cy, w, h, sp, r.borderRadius)
+        drawShapePath(ctx, r.shape, cx, cy, w, h, sp, r.borderRadius != null ? r.borderRadius * view.scale : undefined)
         const inside = ctx.isPointInPath(sx, sy)
         ctx.restore()
         if (inside) return r
@@ -660,23 +663,30 @@ export function useCanvasEngine(
       const sy = Math.round((img.iy - layer.y) / layer.scaleY)
       if (sx < 0 || sy < 0 || sx >= wc.width || sy >= wc.height) return
       const wctx = wc.getContext('2d')!
-      const imageData = wctx.getImageData(0, 0, wc.width, wc.height)
-      const result = magicWandSelect(imageData, sx, sy, magicWandTolerance.value)
-      if (result && (result.shape === 'circle' || (result.points && result.points.length >= 3))) {
-        snapshot?.()
-        const region: CropRegion = {
-          id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          name: nextRegionName(),
-          x: result.minX * layer.scaleX + layer.x, y: result.minY * layer.scaleY + layer.y,
-          width: result.width * layer.scaleX, height: result.height * layer.scaleY,
-          shape: result.shape || 'custom',
-          points: result.points?.map(p => ({ x: p.x * layer.scaleX + layer.x, y: p.y * layer.scaleY + layer.y })),
-        }
-        regions.push(region)
-        selectRegion(region.id)
-        activeTool.value = 'select'
-      }
+      const tolerance = magicWandTolerance.value
+      // 显示 loading 后再执行重操作
+      isHeavyProcessing.value = true
       markDirty()
+      requestAnimationFrame(() => {
+        const imageData = wctx.getImageData(0, 0, wc.width, wc.height)
+        const result = magicWandSelect(imageData, sx, sy, tolerance)
+        if (result && ((result.shape === 'circle' || result.shape === 'roundrect') || (result.points && result.points.length >= 3))) {
+          snapshot?.()
+          const region: CropRegion = {
+            id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name: nextRegionName(),
+            x: result.minX * layer.scaleX + layer.x, y: result.minY * layer.scaleY + layer.y,
+            width: result.width * layer.scaleX, height: result.height * layer.scaleY,
+            shape: result.shape || 'custom',
+            points: result.points?.map(p => ({ x: p.x * layer.scaleX + layer.x, y: p.y * layer.scaleY + layer.y })),
+          }
+          regions.push(region)
+          selectRegion(region.id)
+          activeTool.value = 'select'
+        }
+        isHeavyProcessing.value = false
+        markDirty()
+      })
       return
     }
 
@@ -803,7 +813,7 @@ export function useCanvasEngine(
     // also check active layer handles even if slightly outside bbox
     const al2 = getActiveLayer()
     let handleHit: string | null = null
-    if (al2 && al2.visible && layers.value.length > 1) {
+    if (al2 && al2.visible && layers.value.length > 0) {
       const hsz = 12
       const lx = (al2.x - view.offsetX) * view.scale
       const ly = (al2.y - view.offsetY) * view.scale
@@ -819,7 +829,7 @@ export function useCanvasEngine(
       else if (Math.abs(sx - lx) < hsz && Math.abs(sy - lcy) < hsz) handleHit = 'w'
       else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - lcy) < hsz) handleHit = 'e'
     }
-    if (handleHit && activeTool.value === 'select' && !hit && !hitT2) {
+    if (handleHit && (activeTool.value === 'select' || e.ctrlKey) && !hit && !hitT2) {
       snapshot?.()
       isResizingLayer.value = true
       layerResizeHandle.value = handleHit
@@ -1382,7 +1392,7 @@ export function useCanvasEngine(
 
     // check layer resize handles
     const al = getActiveLayer()
-    if (al && al.visible && layers.value.length > 1) {
+    if (al && al.visible && layers.value.length > 0) {
       const hsz = 10
       const lx = (al.x - view.offsetX) * view.scale
       const ly = (al.y - view.offsetY) * view.scale
@@ -1483,7 +1493,7 @@ export function useCanvasEngine(
 
     // active layer outline + handles — drawn after all layers so always visible
     const al = getActiveLayer()
-    if (al && al.visible && layers.value.length > 1) {
+    if (al && al.visible && layers.value.length > 0) {
       const natW = al.image.naturalWidth * al.scaleX, natH = al.image.naturalHeight * al.scaleY
       const ldx = (al.x - view.offsetX) * view.scale
       const ldy = (al.y - view.offsetY) * view.scale
@@ -1592,7 +1602,7 @@ export function useCanvasEngine(
       const rcy = (r.y + r.height / 2 - view.offsetY) * view.scale
       const rw = r.width * view.scale
       const rh = r.height * view.scale
-      addShapeToPath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius)
+      addShapeToPath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius != null ? r.borderRadius * view.scale : undefined)
     }
     ctx.fillStyle = 'rgba(0,0,0,0.35)'
     ctx.fill('evenodd')
@@ -1613,7 +1623,7 @@ export function useCanvasEngine(
       ctx.shadowBlur = 6
       ctx.strokeStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : 'rgba(255,255,255,0.7)'
       ctx.lineWidth = isSelected ? 2.5 : isMultiSelected ? 1.8 : 1.5
-      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius)
+      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius != null ? r.borderRadius * view.scale : undefined)
       ctx.stroke()
       ctx.restore()
 
@@ -1621,7 +1631,7 @@ export function useCanvasEngine(
       ctx.fillStyle = isSelected ? 'rgba(79,195,247,0.12)' : isMultiSelected ? 'rgba(111,200,247,0.08)' : 'rgba(255,255,255,0.06)'
       ctx.shadowColor = 'rgba(0,0,0,0.25)'
       ctx.shadowBlur = primary ? 8 : 4
-      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius)
+      drawShapePath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius != null ? r.borderRadius * view.scale : undefined)
       ctx.fill()
       ctx.restore()
 
@@ -1630,7 +1640,8 @@ export function useCanvasEngine(
       ctx.fillStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : '#ddd'
       ctx.font = '11px sans-serif'
       ctx.textAlign = 'left'
-      ctx.fillText(r.name, lx, Math.max(ly, 14))
+      const labelText = `${r.name} (${Math.round(r.width)} × ${Math.round(r.height)})`
+      ctx.fillText(labelText, lx, Math.max(ly, 14))
 
       // only draw control points for primary selected region
       if (isSelected) {

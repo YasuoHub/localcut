@@ -70,23 +70,21 @@ export function useCropTemplates() {
     if (!tpl) return []
 
     const targetRect = getActiveLayerDisplayRect(layer)
-    // use the template's baseRect for ratio calculation
-    const br = tpl.baseRect
 
     return tpl.regions.map(tr => {
       const region: CropRegion = {
         id: `tpl_region_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         name: tr.name,
         shape: tr.shape,
-        x: targetRect.x + tr.xRatio * br.width,
-        y: targetRect.y + tr.yRatio * br.height,
-        width: tr.widthRatio * br.width,
-        height: tr.heightRatio * br.height,
+        x: targetRect.x + tr.xRatio * targetRect.width,
+        y: targetRect.y + tr.yRatio * targetRect.height,
+        width: tr.widthRatio * targetRect.width,
+        height: tr.heightRatio * targetRect.height,
       }
       if (tr.pointsRatio && tr.pointsRatio.length >= 3) {
         region.points = tr.pointsRatio.map(p => ({
-          x: targetRect.x + p.x * br.width,
-          y: targetRect.y + p.y * br.height,
+          x: targetRect.x + p.x * targetRect.width,
+          y: targetRect.y + p.y * targetRect.height,
         }))
       }
       return region
