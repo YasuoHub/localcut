@@ -4,6 +4,7 @@ import TopBar from './components/TopBar.vue'
 import LeftSidebar from './components/LeftSidebar.vue'
 import CanvasWorkspace from './components/CanvasWorkspace.vue'
 import RightSidebar from './components/RightSidebar.vue'
+import DeliveryBar from './components/DeliveryBar.vue'
 import MattingWorkspace from './components/matting/MattingWorkspace.vue'
 import { useEditorStore } from './stores/editor'
 import { useHistoryStore } from './stores/history'
@@ -223,10 +224,11 @@ onBeforeUnmount(() => {
   <div class="app-shell">
     <TopBar />
     <div class="app-body">
-      <LeftSidebar @upload-image="handleUploadImage" @open-matting="mattingWorkspace?.open()" @create-preset="canvasWorkspace?.createPresetRegion($event)" />
+      <LeftSidebar @upload-image="handleUploadImage" @open-matting="mattingWorkspace?.open()" />
       <CanvasWorkspace ref="canvasWorkspace" />
       <RightSidebar />
     </div>
+    <DeliveryBar />
     <MattingWorkspace ref="mattingWorkspace" />
   </div>
 </template>

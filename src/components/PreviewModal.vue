@@ -15,6 +15,7 @@ const zoomIndex = ref(0)
 const zoomRegions = ref<CropRegion[]>([])
 const showZoom = ref(false)
 const loading = ref(false)
+const emit = defineEmits<{ export: [] }>()
 
 function previewRegions(): CropRegion[] {
   if (editor.selectedRegionIds.size > 0) {
@@ -76,9 +77,7 @@ function onNavigate(region: CropRegion) {
 }
 
 function handleBatchExport() {
-  // trigger the same batch export flow as the sidebar button
-  const btn = document.querySelector('.export-btn') as HTMLButtonElement | null
-  btn?.click()
+  emit('export')
 }
 
 defineExpose({ open, close })

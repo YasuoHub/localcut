@@ -76,9 +76,9 @@ const showSettings = ref(false)
 </template>
 
 <style scoped>
-.topbar { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.topbar { height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 14px 0 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .logo { font-weight: 700; font-size: 15px; color: var(--accent); letter-spacing: -0.3px; }
-.topbar-right { display: flex; align-items: center; gap: 4px; }
+.topbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .icon-btn { width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 15px; color: var(--text-muted); display: flex; align-items: center; justify-content: center; }
 .icon-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
 .help-btn { width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 13px; font-weight: 600; color: var(--text-muted); }

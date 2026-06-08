@@ -3,10 +3,66 @@ import { ref } from 'vue'
 import { useEditorStore } from '../../stores/editor'
 import { useHistoryStore } from '../../stores/history'
 import { generateGridRegions, duplicateRegionBySpacing, generateSliceRegions, validateSliceOptions, generateGuideRegions } from '../../composables/useBatchRegions'
-import type { DuplicateOptions } from '../../types'
+import { nextRegionName } from '../../composables/shapeUtils'
+import type { CropRegion, DuplicateOptions } from '../../types'
 
 const editor = useEditorStore()
 const history = useHistoryStore()
+
+interface PresetCropSize {
+  id: string
+  name: string
+  width: number
+  height: number
+}
+
+const presetCropSizes: PresetCropSize[] = [
+  { id: 'free', name: '自由裁剪', width: 0, height: 0 },
+  { id: 'wechat_cover', name: '公众号首图', width: 900, height: 383 },
+  { id: 'wechat_secondary', name: '公众号次图', width: 200, height: 200 },
+  { id: 'moments_cover', name: '朋友圈封面', width: 1080, height: 1080 },
+  { id: 'desktop_wallpaper', name: '电脑壁纸', width: 1920, height: 1080 },
+  { id: 'logo_design', name: 'Logo 设计', width: 500, height: 500 },
+  { id: 'square_main', name: '方形主图', width: 800, height: 800 },
+  { id: 'vertical_main', name: '竖版主图', width: 800, height: 1200 },
+  { id: 'pdd_store', name: '拼多多店铺首页', width: 750, height: 1000 },
+  { id: 'photo_1r', name: '标准 1 寸 / 1R', width: 295, height: 413 },
+  { id: 'photo_2r', name: '标准 2 寸 / 2R', width: 413, height: 626 },
+  { id: 'id_card', name: '二代身份证', width: 358, height: 441 },
+]
+
+function createPresetRegion(preset: PresetCropSize) {
+  if (preset.width === 0 || preset.height === 0) {
+    editor.setTool('rect')
+    return
+  }
+
+  const layer = editor.activeLayer
+  if (!layer) return
+  const imgW = layer.image.naturalWidth
+  const imgH = layer.image.naturalHeight
+  let rectW = imgW
+  let rectH = Math.round(imgW * (preset.height / preset.width))
+  const shouldConstrain = editor.isSingleLayerMode && editor.constrainToImage
+  if (shouldConstrain && rectH > imgH) {
+    rectH = imgH
+    rectW = Math.round(imgH * (preset.width / preset.height))
+  }
+
+  history.snapshot()
+  const region: CropRegion = {
+    id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name: nextRegionName(),
+    x: 0,
+    y: shouldConstrain ? Math.max(0, Math.round((imgH - rectH) / 2)) : Math.round((imgH - rectH) / 2),
+    width: rectW,
+    height: rectH,
+    shape: 'rect',
+  }
+  editor.regions.push(region)
+  editor.selectRegion(region.id)
+  editor.invalidateCanvas()
+}
 
 // ---- grid ----
 const grid = ref({
@@ -75,6 +131,25 @@ function handleGuidSlice() {
 <template>
   <section class="section">
     <div class="section-title">批量切图</div>
+
+    <details class="batch-detail">
+      <summary class="batch-summary">快捷区域尺寸
+        <span v-if="!editor.activeLayer" class="summary-hint">（需活动图层）</span>
+      </summary>
+      <div class="preset-grid">
+        <button
+          v-for="preset in presetCropSizes"
+          :key="preset.id"
+          class="preset-chip"
+          :disabled="!editor.activeLayer && preset.width > 0"
+          :title="preset.width > 0 ? `${preset.name} ${preset.width}x${preset.height}` : preset.name"
+          @click="createPresetRegion(preset)"
+        >
+          <span>{{ preset.name }}</span>
+          <small v-if="preset.width > 0">{{ preset.width }}x{{ preset.height }}</small>
+        </button>
+      </div>
+    </details>
 
     <!-- Grid generation -->
     <details class="batch-detail" open>
@@ -203,6 +278,16 @@ function handleGuidSlice() {
 .batch-summary:hover { color: var(--text-primary); }
 .summary-hint { font-size: 10px; color: var(--text-muted); font-weight: 400; }
 .batch-body { padding: 8px 0 0 0; }
+.preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding-top: 8px; }
+.preset-chip {
+  min-height: 38px; padding: 5px 7px; background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-secondary); display: flex; flex-direction: column;
+  align-items: flex-start; justify-content: center; gap: 2px; text-align: left; min-width: 0;
+}
+.preset-chip:hover { border-color: var(--accent); color: var(--text-primary); }
+.preset-chip:disabled { opacity: 0.45; cursor: default; }
+.preset-chip span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.preset-chip small { color: var(--text-muted); font-size: 10px; }
 .warn { color: #e5a400; font-size: 11px; }
 .hint { color: var(--text-muted); font-size: 10px; }
 .btn-primary {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { CropRegion, TextAnnotation, ImageFormat, ExportInspectionResult } from '../types'
 import { useExport } from '../composables/useExport'
 import { inspectExport } from '../composables/useExportInspection'
@@ -16,7 +16,6 @@ import ExportInspectionPanel from './right/ExportInspectionPanel.vue'
 import ExportSizePanel from './right/ExportSizePanel.vue'
 import BatchCutPanel from './right/BatchCutPanel.vue'
 import TemplatePanel from './right/TemplatePanel.vue'
-import PreviewModal from './PreviewModal.vue'
 import ExportInspectionModal from './ExportInspectionModal.vue'
 import ImageZoomModal from './ImageZoomModal.vue'
 
@@ -24,7 +23,59 @@ const editor = useEditorStore()
 const exp = useExportStore()
 const history = useHistoryStore()
 
-const { exportSingleRegion, exportRegions, downloadZip, computeSourcePixelRatio } = useExport()
+type RightTab = 'properties' | 'batch' | 'templates' | 'export'
+const activeTab = ref<RightTab>('properties')
+const rightTabs: { id: RightTab; label: string }[] = [
+  { id: 'properties', label: '属性' },
+  { id: 'batch', label: '批量' },
+  { id: 'templates', label: '模板' },
+  { id: 'export', label: '导出' },
+]
+
+const sidebarRef = ref<HTMLElement | null>(null)
+const listPanelPercent = ref(34)
+const listCollapsed = ref(false)
+const isResizingList = ref(false)
+const listSearch = ref('')
+
+const upperPanelStyle = computed(() => ({
+  height: listCollapsed.value ? '100%' : `${100 - listPanelPercent.value}%`,
+}))
+
+const listPanelStyle = computed(() => ({
+  height: `${listPanelPercent.value}%`,
+}))
+
+function clampListPercent(value: number) {
+  return Math.max(20, Math.min(80, value))
+}
+
+function onListResizeMove(e: PointerEvent) {
+  const el = sidebarRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const next = ((rect.bottom - e.clientY) / rect.height) * 100
+  listPanelPercent.value = clampListPercent(next)
+}
+
+function stopListResize() {
+  isResizingList.value = false
+  window.removeEventListener('pointermove', onListResizeMove)
+  window.removeEventListener('pointerup', stopListResize)
+}
+
+function startListResize(e: PointerEvent) {
+  e.preventDefault()
+  listCollapsed.value = false
+  isResizingList.value = true
+  onListResizeMove(e)
+  window.addEventListener('pointermove', onListResizeMove)
+  window.addEventListener('pointerup', stopListResize)
+}
+
+onBeforeUnmount(stopListResize)
+
+const { exportSingleRegion, computeSourcePixelRatio } = useExport()
 
 // Watch platform preset to auto-fill size
 watch(() => exp.selectedPlatformPresetId, (id) => {
@@ -298,7 +349,6 @@ async function handleExportSingle() {
 }
 
 // ---- preview ----
-const previewModalRef = ref<InstanceType<typeof PreviewModal> | null>(null)
 const previewZoomRegion = ref<CropRegion | null>(null)
 const previewZoomShow = ref(false)
 
@@ -307,11 +357,6 @@ function handlePreviewSingle() {
   if (!editor.imageLoaded || !region) return
   previewZoomRegion.value = region
   previewZoomShow.value = true
-}
-
-function handlePreviewBatch() {
-  if (!editor.imageLoaded || editor.regions.length === 0) return
-  previewModalRef.value?.open()
 }
 
 // ---- region transforms ----
@@ -345,7 +390,18 @@ function handleRotate() {
 
 // ---- region list ----
 const sortedRegions = computed(() => [...editor.regions].reverse())
-const checkedCount = computed(() => editor.selectedRegionIds.size)
+const sortedTexts = computed(() => [...editor.textAnnotations].reverse())
+const listKeyword = computed(() => listSearch.value.trim().toLowerCase())
+const filteredRegions = computed(() => {
+  const keyword = listKeyword.value
+  if (!keyword) return sortedRegions.value
+  return sortedRegions.value.filter(region => region.name.toLowerCase().includes(keyword))
+})
+const filteredTexts = computed(() => {
+  const keyword = listKeyword.value
+  if (!keyword) return sortedTexts.value
+  return sortedTexts.value.filter(text => text.text.toLowerCase().includes(keyword))
+})
 
 const exportResolutionInfo = computed(() => {
   const region = editor.selectedRegion
@@ -377,7 +433,6 @@ function checkedRegions(): CropRegion[] {
   return editor.regions.filter(r => editor.selectedRegionIds.has(r.id))
 }
 
-const exporting = ref(false)
 const showInspectionModal = ref(false)
 const inspectionExportWarning = ref('')
 const activeInspectionResult = ref<ExportInspectionResult | null>(null)
@@ -438,264 +493,240 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
   history.snapshot()
   editor.moveLayer(fromIdx, toIdx)
 }
-
-async function handleBatchExport() {
-  if (!editor.imageLoaded || editor.regions.length === 0) return
-  const toExport = checkedRegions()
-  if (toExport.length === 0) return
-  if (inspectionResult.value.hasBlockingIssues) {
-    inspectionExportWarning.value = '导出体检发现阻断问题，请先查看检测结果。'
-    activeInspectionResult.value = null
-    showInspectionModal.value = true
-    return
-  }
-  activeInspectionResult.value = null
-  inspectionExportWarning.value = ''
-  isExporting.value = true
-  exporting.value = true
-  exportStatusText.value = toExport.length > 1 ? `正在导出 ${toExport.length} 项...` : '正在导出...'
-  try {
-    const namingOptions = {
-      pattern: exp.filenamePattern,
-      imageName: exportImageName.value,
-      regionIndexById: regionIndexById.value,
-    }
-    const bw = exp.batchUseCustomSize ? exp.batchOutputWidth : null
-    const bh = exp.batchUseCustomSize ? exp.batchOutputHeight : null
-    const fit = exp.batchUseCustomSize ? exp.batchFitMode : undefined
-    const fill = exp.batchFillColor
-
-    const upscaleFn = await createUpscaleFn()
-
-    const blob = await exportRegions(
-      editor.layers, toExport,
-      exp.exportFormat, exp.exportQuality,
-      exp.exportDpr,
-      editor.showOriginal,
-      editor.textAnnotations,
-      namingOptions,
-      bw, bh, fit, fill,
-      upscaleFn,
-      exp.sharpenAmount,
-    )
-    downloadZip(blob)
-  } catch (err) { console.error('Export failed:', err) }
-  finally {
-    isExporting.value = false
-    exporting.value = false
-    sharedUpscaleCleanup?.()
-    sharedUpscaleCleanup = null
-    exportStatusText.value = ''
-  }
-}
 </script>
 
 <template>
-  <aside class="sidebar">
-    <div class="top-half scrollbar">
-
-    <!-- Layer panel -->
-    <section class="section" v-if="editor.layers.length > 0">
-      <div class="section-title">图层
-        <button class="clear-all-btn" title="清空图层" @click="history.snapshot(); editor.layers.splice(0); editor.activeLayerId = null">清空</button>
-      </div>
-      <div class="layer-list scrollbar">
-        <div
-          v-for="(layer, idx) in editor.layers" :key="layer.id"
-          class="layer-item"
-          :class="{
-            active: layer.id === editor.activeLayerId,
-            'drag-over': dragOverIdx === idx,
-          }"
-          draggable="true"
-          @click="editor.setActiveLayer(layer.id)"
-          @dragstart="onLayerDragStart($event, idx)"
-          @dragover.prevent="dragOverIdx = idx"
-          @dragleave="onLayerDragLeave(idx)"
-          @drop="onLayerDrop($event, idx)"
+  <aside ref="sidebarRef" class="sidebar" :class="{ resizing: isResizingList }">
+    <div class="upper-panel" :style="upperPanelStyle">
+      <div class="tab-bar">
+        <button
+          v-for="tab in rightTabs"
+          :key="tab.id"
+          class="tab-btn"
+          :class="{ active: activeTab === tab.id }"
+          @click="activeTab = tab.id"
         >
-          <span class="layer-visibility" @click.stop="history.snapshot(); editor.toggleLayerVisible(layer.id)">{{ layer.visible ? '👁' : '—' }}</span>
-          <input type="checkbox" class="layer-check" :checked="editor.selectedLayerIds.has(layer.id)" @click.stop @change="editor.toggleLayerCheck(layer.id)" />
-          <span class="layer-name" v-if="renamingId !== layer.id" @dblclick.stop="renamingId = layer.id; renameValue = layer.name">{{ layer.name }}</span>
-          <input
-            v-else
-            class="layer-rename-input"
-            v-model="renameValue"
-            @blur="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
-            @keyup.enter="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
-            @click.stop
-            ref="renameInput"
-            autofocus
-          />
-          <span class="layer-order-btns">
-            <button class="layer-order-btn" :disabled="idx === 0" @click.stop="history.snapshot(); editor.moveLayerUp(layer.id)">▲</button>
-            <button class="layer-order-btn" :disabled="idx === editor.layers.length - 1" @click.stop="history.snapshot(); editor.moveLayerDown(layer.id)">▼</button>
-          </span>
-          <button class="layer-delete" title="删除图层" @click.stop="history.snapshot(); editor.removeLayer(layer.id)">×</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- Brush settings -->
-    <section class="section" v-if="editor.activeTool === 'brush'">
-      <div class="section-title">画笔设置</div>
-      <div class="field"><label>大小: {{ editor.brushSettings.size }}px</label><input type="range" min="1" max="100" v-model.number="editor.brushSettings.size" /></div>
-      <div class="field"><label>颜色</label><input type="color" v-model="editor.brushSettings.color" class="color-input" /></div>
-    </section>
-
-    <!-- Eraser settings -->
-    <section class="section" v-if="editor.activeTool === 'eraser'">
-      <div class="section-title">橡皮设置</div>
-      <div class="field"><label>大小: {{ editor.eraserSettings.size }}px</label><input type="range" min="1" max="150" v-model.number="editor.eraserSettings.size" /></div>
-    </section>
-
-    <!-- Magic wand settings -->
-    <section class="section" v-if="editor.activeTool === 'magic-wand'">
-      <div class="section-title">魔棒设置</div>
-      <div class="field"><label>容差: {{ editor.magicWandTolerance }}</label><input type="range" min="1" max="100" v-model.number="editor.magicWandTolerance" /></div>
-    </section>
-
-    <!-- Region properties -->
-    <section class="section" v-if="editor.selectedRegion">
-      <div class="section-title">区域属性</div>
-      <div class="field"><label>名称</label><input type="text" v-model="editName" @blur="updateName" @keyup.enter="updateName" /></div>
-      <div class="field-row">
-        <div class="field"><label>X (px)</label><input type="number" v-model.number="editX" @change="updatePosition" /></div>
-        <div class="field"><label>Y (px)</label><input type="number" v-model.number="editY" @change="updatePosition" /></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>宽度 (px)</label><input type="number" v-model.number="editWidth" min="1" @focus="widthFocused = true" @blur="widthFocused = false; updateSize()" /></div>
-        <div class="field"><label>高度 (px)</label><input type="number" v-model.number="editHeight" min="1" @focus="heightFocused = true" @blur="heightFocused = false; updateSize()" /></div>
-      </div>
-      <div class="field"><label>形状</label><div class="readonly-value">{{ shapeLabels[editor.selectedRegion.shape] ?? editor.selectedRegion.shape }}</div></div>
-      <div class="field" v-if="editor.selectedRegion.shape === 'roundrect'">
-        <label>圆角 (px)</label>
-        <input type="number" v-model.number="editBorderRadius" min="0" @input="onBorderRadiusInput" @change="updateBorderRadius" />
-      </div>
-      <div class="btn-row">
-        <button class="btn-primary preview-single-btn" @click="handlePreviewSingle">预览</button>
-        <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? (exportStatusText || '导出中...') : '导出此区域' }}</button>
-      </div>
-    </section>
-
-    <!-- Text properties -->
-    <section class="section" v-if="editor.selectedText">
-      <div class="section-title">文字属性</div>
-      <div class="field"><label>内容</label><input type="text" v-model="editText" placeholder="输入文字..." @input="applyTextEdits" @blur="commitTextEdits" /></div>
-      <div class="field-row">
-        <div class="field"><label>字号</label><input type="number" v-model.number="editFontSize" min="8" max="200" @input="applyTextEdits" /></div>
-        <div class="field"><label>粗细</label><select v-model="editFontWeight" @change="applyTextEdits" class="select-input"><option value="normal">常规</option><option value="bold">粗体</option></select></div>
-      </div>
-      <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @input="applyTextEdits" class="color-input" /></div>
-    </section>
-
-    <!-- No selection -->
-    <section class="section" v-if="!editor.selectedRegion && !editor.selectedText && editor.activeTool !== 'brush' && editor.activeTool !== 'eraser' && editor.activeTool !== 'magic-wand'">
-      <div class="section-title">属性</div>
-      <div class="empty">选择区域或文字以编辑属性</div>
-    </section>
-
-    <!-- Region transforms -->
-    <section class="section" v-if="editor.selectedRegion || editor.selectedRegionIds.size > 0">
-      <div class="section-title">
-        区域变换
-        <span v-if="editor.selectedRegionIds.size > 0" class="count">{{ editor.selectedRegionIds.size }}区</span>
-      </div>
-      <div class="transform-row">
-        <button class="tf-btn" title="水平翻转" @click="handleFlipH">↔ 水平翻转</button>
-        <button class="tf-btn" title="垂直翻转" @click="handleFlipV">↕ 垂直翻转</button>
-      </div>
-      <div class="transform-row">
-        <button class="tf-btn" title="左转90°" @click="handleRotateLeft">↺ 左转90°</button>
-        <button class="tf-btn" title="右转90°" @click="handleRotateRight">↻ 右转90°</button>
-      </div>
-      <div class="field-row" style="align-items: flex-end;">
-        <div class="field" style="flex:1"><label>旋转角度</label><input type="number" v-model.number="rotateAngle" class="text-input" min="-360" max="360" /></div>
-        <div class="field"><button class="tf-btn" @click="handleRotate">旋转</button></div>
-      </div>
-    </section>
-
-    <!-- Batch cut -->
-    <BatchCutPanel />
-
-    <!-- Template -->
-    <TemplatePanel />
-
-    <!-- Export settings -->
-    <section class="section">
-      <div class="section-title">导出设置</div>
-      <div class="field"><label>格式</label>
-        <div class="radio-group">
-          <label class="radio" v-for="fmt in (['png', 'jpeg', 'webp'] as ImageFormat[])" :key="fmt">
-            <input type="radio" :value="fmt" v-model="exp.exportFormat" />{{ fmt.toUpperCase() }}
-          </label>
-        </div>
-      </div>
-      <div class="field" v-if="exp.exportFormat === 'jpeg' || exp.exportFormat === 'webp'"><label>质量: {{ exp.exportQuality }}%</label><input type="range" min="10" max="100" v-model.number="exp.exportQuality" /></div>
-      <div class="field"><label>设备像素比: {{ exp.exportDpr }}x</label><input type="range" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" /></div>
-      <div class="field">
-        <label class="checkbox-label">
-          <input type="checkbox" v-model="exp.upscaleEnabled" />AI 超分 {{ exp.upscaleScale }}×
-        </label>
-        <div class="upscale-hint" v-if="exp.upscaleEnabled">首次需下载模型 ~7.5 MB，之后缓存</div>
-      <div class="field">
-        <label>锐化强度: {{ exp.sharpenAmount }}%</label>
-        <input type="range" min="0" max="200" step="10" v-model.number="exp.sharpenAmount" />
-      </div>
-      </div>
-      <div v-if="exportResolutionInfo" class="export-res-info">
-        <div class="res-row">输出: <strong>{{ exportResolutionInfo.effectivePw }} × {{ exportResolutionInfo.effectivePh }}</strong> px</div>
-        <div class="res-row">源图: {{ exportResolutionInfo.srcLabel }}</div>
-        <div v-if="exportResolutionInfo.isDprCapped" class="res-warn">⚠ DPR 已从 {{ exp.exportDpr }}x 限制为 {{ exportResolutionInfo.effectiveDpr }}x（源图像素不足）</div>
-        <div v-else-if="exportResolutionInfo.isOverUpscale" class="res-warn">⚠ 源图像素不足，建议降低 DPR</div>
-      </div>
-    </section>
-
-    <!-- Batch size -->
-    <ExportSizePanel />
-
-    <!-- File naming -->
-    <ExportNamingPanel />
-
-    <!-- Export inspection -->
-    <ExportInspectionPanel
-      :result="inspectionResult"
-      :export-warning="inspectionExportWarning"
-      @open="openInspectionResult"
-    />
-
-    </div>
-
-    <!-- Regions list + Batch export -->
-    <div class="bottom-half">
-    <section class="section region-group">
-      <div class="section-title">裁剪区域 [{{ editor.regions.length }}]
-        <button  class="clear-all-btn" title="一键清空" @click="history.snapshot(); editor.clearRegions()">清空</button>
-      </div>
-      <div v-if="editor.regions.length === 0" class="empty region-list">暂无区域</div>
-      <div v-else class="region-list scrollbar">
-        <div
-          v-for="r in sortedRegions" :key="r.id"
-          class="region-item" :class="{ selected: r.id === editor.selectedRegionId }"
-          @click="selectRegion(r.id, $event)"
-        >
-          <input type="checkbox" :checked="editor.selectedRegionIds.has(r.id)" class="region-check" @click.stop @change="editor.toggleRegionCheck(r.id)" />
-          <span class="region-shape-icon">{{ shapeIcons[r.shape] ?? '▭' }}</span>
-          <span class="region-name">{{ r.name }}</span>
-          <span class="region-dims">{{ Math.round(r.width) }}×{{ Math.round(r.height) }}</span>
-          <button class="region-delete" title="删除" @click.stop="history.snapshot(); editor.deleteRegion(r.id)">×</button>
-        </div>
-      </div>
-      <div class="btn-row">
-        <button class="btn-primary preview-batch-btn" :disabled="editor.regions.length === 0" @click="handlePreviewBatch">批量预览</button>
-        <button class="btn-primary export-btn" :disabled="exporting || editor.regions.length === 0" @click="handleBatchExport">
-          {{ exporting ? (exportStatusText || '导出中...') : `批量导出 ${checkedCount || editor.regions.length} 项` }}
+          {{ tab.label }}
         </button>
       </div>
-    </section>
+
+      <div class="panel-body scrollbar">
+      <template v-if="activeTab === 'properties'">
+        <section class="section" v-if="editor.layers.length > 0">
+          <div class="section-title">图层
+            <button class="clear-all-btn" title="清空图层" @click="history.snapshot(); editor.layers.splice(0); editor.activeLayerId = null">清空</button>
+          </div>
+          <div class="layer-list scrollbar">
+            <div
+              v-for="(layer, idx) in editor.layers" :key="layer.id"
+              class="layer-item"
+              :class="{ active: layer.id === editor.activeLayerId, 'drag-over': dragOverIdx === idx }"
+              draggable="true"
+              @click="editor.setActiveLayer(layer.id)"
+              @dragstart="onLayerDragStart($event, idx)"
+              @dragover.prevent="dragOverIdx = idx"
+              @dragleave="onLayerDragLeave(idx)"
+              @drop="onLayerDrop($event, idx)"
+            >
+              <span class="layer-visibility" :title="layer.visible ? '隐藏图层' : '显示图层'" @click.stop="history.snapshot(); editor.toggleLayerVisible(layer.id)">{{ layer.visible ? '◉' : '○' }}</span>
+              <input type="checkbox" class="layer-check" :checked="editor.selectedLayerIds.has(layer.id)" @click.stop @change="editor.toggleLayerCheck(layer.id)" />
+              <span class="layer-name" v-if="renamingId !== layer.id" @dblclick.stop="renamingId = layer.id; renameValue = layer.name">{{ layer.name }}</span>
+              <input
+                v-else
+                class="layer-rename-input"
+                v-model="renameValue"
+                @blur="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
+                @keyup.enter="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
+                @click.stop
+                autofocus
+              />
+              <span class="layer-order-btns">
+                <button class="layer-order-btn" :disabled="idx === 0" @click.stop="history.snapshot(); editor.moveLayerUp(layer.id)">▲</button>
+                <button class="layer-order-btn" :disabled="idx === editor.layers.length - 1" @click.stop="history.snapshot(); editor.moveLayerDown(layer.id)">▼</button>
+              </span>
+              <button class="layer-delete" title="删除图层" @click.stop="history.snapshot(); editor.removeLayer(layer.id)">×</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" v-if="editor.activeTool === 'brush'">
+          <div class="section-title">画笔设置</div>
+          <div class="field"><label>大小: {{ editor.brushSettings.size }}px</label><input type="range" min="1" max="100" v-model.number="editor.brushSettings.size" /></div>
+          <div class="field"><label>颜色</label><input type="color" v-model="editor.brushSettings.color" class="color-input" /></div>
+        </section>
+
+        <section class="section" v-if="editor.activeTool === 'eraser'">
+          <div class="section-title">橡皮设置</div>
+          <div class="field"><label>大小: {{ editor.eraserSettings.size }}px</label><input type="range" min="1" max="150" v-model.number="editor.eraserSettings.size" /></div>
+        </section>
+
+        <section class="section" v-if="editor.activeTool === 'magic-wand'">
+          <div class="section-title">魔棒设置</div>
+          <div class="field"><label>容差: {{ editor.magicWandTolerance }}</label><input type="range" min="1" max="100" v-model.number="editor.magicWandTolerance" /></div>
+        </section>
+
+        <section class="section" v-if="editor.selectedRegion">
+          <div class="section-title">区域属性</div>
+          <div class="field"><label>名称</label><input type="text" v-model="editName" @blur="updateName" @keyup.enter="updateName" /></div>
+          <div class="field-row">
+            <div class="field"><label>X (px)</label><input type="number" v-model.number="editX" @change="updatePosition" /></div>
+            <div class="field"><label>Y (px)</label><input type="number" v-model.number="editY" @change="updatePosition" /></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>宽度 (px)</label><input type="number" v-model.number="editWidth" min="1" @focus="widthFocused = true" @blur="widthFocused = false; updateSize()" /></div>
+            <div class="field"><label>高度 (px)</label><input type="number" v-model.number="editHeight" min="1" @focus="heightFocused = true" @blur="heightFocused = false; updateSize()" /></div>
+          </div>
+          <div class="field"><label>形状</label><div class="readonly-value">{{ shapeLabels[editor.selectedRegion.shape] ?? editor.selectedRegion.shape }}</div></div>
+          <div class="field" v-if="editor.selectedRegion.shape === 'roundrect'">
+            <label>圆角 (px)</label>
+            <input type="number" v-model.number="editBorderRadius" min="0" @input="onBorderRadiusInput" @change="updateBorderRadius" />
+          </div>
+          <div class="btn-row">
+            <button class="btn-primary preview-single-btn" @click="handlePreviewSingle">预览</button>
+            <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportSingle">{{ exportingSingle ? (exportStatusText || '导出中...') : '导出此区域' }}</button>
+          </div>
+        </section>
+
+        <section class="section" v-if="editor.selectedText">
+          <div class="section-title">文字属性</div>
+          <div class="field"><label>内容</label><input type="text" v-model="editText" placeholder="输入文字..." @input="applyTextEdits" @blur="commitTextEdits" /></div>
+          <div class="field-row">
+            <div class="field"><label>字号</label><input type="number" v-model.number="editFontSize" min="8" max="200" @input="applyTextEdits" /></div>
+            <div class="field"><label>粗细</label><select v-model="editFontWeight" @change="applyTextEdits" class="select-input"><option value="normal">常规</option><option value="bold">粗体</option></select></div>
+          </div>
+          <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @input="applyTextEdits" class="color-input" /></div>
+        </section>
+
+        <section class="section" v-if="!editor.selectedRegion && !editor.selectedText && editor.activeTool !== 'brush' && editor.activeTool !== 'eraser' && editor.activeTool !== 'magic-wand'">
+          <div class="section-title">属性</div>
+          <div class="empty">选择区域、文字或图层以编辑属性</div>
+        </section>
+
+        <section class="section" v-if="editor.selectedRegion || editor.selectedRegionIds.size > 0">
+          <div class="section-title">
+            区域变换
+            <span v-if="editor.selectedRegionIds.size > 0" class="count">{{ editor.selectedRegionIds.size }}区</span>
+          </div>
+          <div class="transform-row">
+            <button class="tf-btn" title="水平翻转" @click="handleFlipH">↔ 水平翻转</button>
+            <button class="tf-btn" title="垂直翻转" @click="handleFlipV">↕ 垂直翻转</button>
+          </div>
+          <div class="transform-row">
+            <button class="tf-btn" title="左转90°" @click="handleRotateLeft">↺ 左转90°</button>
+            <button class="tf-btn" title="右转90°" @click="handleRotateRight">↻ 右转90°</button>
+          </div>
+          <div class="field-row" style="align-items: flex-end;">
+            <div class="field" style="flex:1"><label>旋转角度</label><input type="number" v-model.number="rotateAngle" class="text-input" min="-360" max="360" /></div>
+            <div class="field"><button class="tf-btn" @click="handleRotate">旋转</button></div>
+          </div>
+        </section>
+      </template>
+
+      <template v-else-if="activeTab === 'batch'">
+        <BatchCutPanel />
+      </template>
+
+      <template v-else-if="activeTab === 'templates'">
+        <TemplatePanel />
+      </template>
+
+      <template v-else-if="activeTab === 'export'">
+        <section class="section">
+          <div class="section-title">导出设置</div>
+          <div class="field"><label>格式</label>
+            <div class="radio-group">
+              <label class="radio" v-for="fmt in (['png', 'jpeg', 'webp'] as ImageFormat[])" :key="fmt">
+                <input type="radio" :value="fmt" v-model="exp.exportFormat" />{{ fmt.toUpperCase() }}
+              </label>
+            </div>
+          </div>
+          <div class="field" v-if="exp.exportFormat === 'jpeg' || exp.exportFormat === 'webp'"><label>质量: {{ exp.exportQuality }}%</label><input type="range" min="10" max="100" v-model.number="exp.exportQuality" /></div>
+          <div class="field"><label>设备像素比: {{ exp.exportDpr }}x</label><input type="range" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" /></div>
+          <div class="field">
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="exp.upscaleEnabled" />AI 超分 {{ exp.upscaleScale }}×
+            </label>
+            <div class="upscale-hint" v-if="exp.upscaleEnabled">首次需下载模型 ~7.5 MB，之后缓存</div>
+            <div class="field">
+              <label>锐化强度: {{ exp.sharpenAmount }}%</label>
+              <input type="range" min="0" max="200" step="10" v-model.number="exp.sharpenAmount" />
+            </div>
+          </div>
+          <div v-if="exportResolutionInfo" class="export-res-info">
+            <div class="res-row">输出: <strong>{{ exportResolutionInfo.effectivePw }} × {{ exportResolutionInfo.effectivePh }}</strong> px</div>
+            <div class="res-row">源图: {{ exportResolutionInfo.srcLabel }}</div>
+            <div v-if="exportResolutionInfo.isDprCapped" class="res-warn">DPR 已从 {{ exp.exportDpr }}x 限制为 {{ exportResolutionInfo.effectiveDpr }}x（源图像素不足）</div>
+            <div v-else-if="exportResolutionInfo.isOverUpscale" class="res-warn">源图像素不足，建议降低 DPR</div>
+          </div>
+        </section>
+
+        <ExportSizePanel />
+        <ExportNamingPanel />
+        <ExportInspectionPanel
+          :result="inspectionResult"
+          :export-warning="inspectionExportWarning"
+          @open="openInspectionResult"
+        />
+      </template>
+      </div>
     </div>
+
+    <div v-if="listCollapsed" class="list-collapsed">
+      <button class="expand-list-btn" @click="listCollapsed = false">展开卡片列表</button>
+    </div>
+
+    <section v-else class="list-panel" :style="listPanelStyle">
+      <div class="list-resizer" title="拖动调整清单高度" @pointerdown="startListResize"></div>
+      <div class="list-header">
+        <div>
+          <div class="list-title">卡片列表</div>
+          <div class="list-meta">裁剪 {{ editor.regions.length }} / 文字 {{ editor.textAnnotations.length }}</div>
+        </div>
+        <button class="collapse-list-btn" title="收起卡片列表" @click="listCollapsed = true">收起</button>
+      </div>
+      <div class="list-search">
+        <input v-model="listSearch" type="search" placeholder="裁剪框搜名称，文字框搜内容" />
+      </div>
+      <div class="list-scroll scrollbar">
+        <div class="list-subtitle">
+          <span>裁剪框</span>
+          <button class="clear-all-btn" title="一键清空" @click="history.snapshot(); editor.clearRegions()">清空</button>
+        </div>
+        <div v-if="filteredRegions.length === 0" class="empty list-empty">暂无匹配裁剪框</div>
+        <div v-else class="region-list">
+          <div
+            v-for="r in filteredRegions" :key="r.id"
+            class="region-item" :class="{ selected: r.id === editor.selectedRegionId }"
+            @click="selectRegion(r.id, $event)"
+          >
+            <input type="checkbox" :checked="editor.selectedRegionIds.has(r.id)" class="region-check" @click.stop @change="editor.toggleRegionCheck(r.id)" />
+            <span class="region-shape-icon">{{ shapeIcons[r.shape] ?? '▭' }}</span>
+            <span class="region-name">{{ r.name }}</span>
+            <span class="region-dims">{{ Math.round(r.width) }}×{{ Math.round(r.height) }}</span>
+            <button class="region-delete" title="删除" @click.stop="history.snapshot(); editor.deleteRegion(r.id)">×</button>
+          </div>
+        </div>
+
+        <div class="list-subtitle text-subtitle">
+          <span>文字框</span>
+        </div>
+        <div v-if="filteredTexts.length === 0" class="empty list-empty">暂无匹配文字框</div>
+        <div v-else class="text-list">
+          <div
+            v-for="t in filteredTexts"
+            :key="t.id"
+            class="text-item"
+            :class="{ selected: t.id === editor.selectedTextId }"
+            @click="editor.selectText(t.id)"
+          >
+            <span class="text-icon">T</span>
+            <span class="text-name">{{ t.text || '未命名文字' }}</span>
+            <button class="region-delete" title="删除文字" @click.stop="history.snapshot(); editor.deleteText(t.id)">×</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </aside>
-  <PreviewModal ref="previewModalRef" />
   <ExportInspectionModal v-model:show="showInspectionModal" :result="modalInspectionResult" />
   <ImageZoomModal :region="previewZoomRegion" v-model:show="previewZoomShow" />
 
@@ -711,9 +742,14 @@ async function handleBatchExport() {
 </template>
 
 <style scoped>
-.sidebar { width: 240px; height: 100%; background: var(--bg-secondary); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
-.top-half { flex: 1; overflow-y: auto; border-bottom: 1px solid var(--border); }
-.bottom-half { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.sidebar { width: 340px; height: 100%; background: var(--bg-secondary); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; user-select: auto; }
+.sidebar.resizing { cursor: row-resize; user-select: none; }
+.upper-panel { min-height: 20%; display: flex; flex-direction: column; overflow: hidden; }
+.tab-bar { height: 38px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; padding: 5px 6px 4px; border-bottom: 1px solid var(--border); background: var(--bg-secondary); flex-shrink: 0; }
+.tab-btn { height: 28px; padding: 0 6px; background: transparent; border: 1px solid transparent; border-radius: var(--radius); color: var(--text-muted); font-size: 12px; }
+.tab-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.tab-btn.active { background: var(--bg-tertiary); color: var(--accent); border-color: rgba(40, 199, 111, 0.35); }
+.panel-body { flex: 1; min-height: 0; overflow-y: auto; }
 .section { padding: 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
 .count { background: var(--bg-tertiary); padding: 1px 6px; border-radius: 8px; font-size: 10px; color: var(--text-secondary); }
@@ -733,22 +769,68 @@ async function handleBatchExport() {
 .btn-row { display: flex; gap: 6px; }
 .preview-single-btn { background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); }
 .preview-single-btn:hover { opacity: 0.85; }
-.preview-batch-btn { background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); padding: 8px 16px; }
-.preview-batch-btn:hover { opacity: 0.85; }
-.preview-batch-btn:disabled { opacity: 0.4; cursor: default; }
-.export-btn { flex: 1; }
 .color-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; padding: 2px; }
 .select-input { width: 100%; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; color: var(--text-primary); font-size: 12px; outline: none; }
 .select-input:focus { border-color: var(--accent); }
-.region-group { flex: 1; display: flex; flex-direction: column; min-height: 0; padding-bottom: 14px; }
-.region-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; }
-.region-item { display: flex; align-items: center; gap: 5px; padding: 5px 6px; border-radius: var(--radius); cursor: pointer; transition: background 0.1s; font-size: 12px; flex-shrink: 0; }
-.region-item:hover { background: var(--bg-hover); }
-.region-item.selected { background: rgba(79, 195, 247, 0.1); outline: 1px solid rgba(79, 195, 247, 0.3); }
+.region-list { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.region-item {
+  display: flex; align-items: center; gap: 7px; padding: 8px 8px;
+  border-radius: var(--radius); cursor: pointer; transition: background 0.1s, border-color 0.1s;
+  font-size: 12px; flex-shrink: 0; background: var(--bg-primary); border: 1px solid var(--border);
+}
+.region-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.region-item.selected { background: rgba(74, 168, 255, 0.1); border-color: rgba(74, 168, 255, 0.45); outline: none; }
 .region-check { flex-shrink: 0; accent-color: var(--accent); cursor: pointer; width: 13px; height: 13px; }
 .region-shape-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
 .region-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .region-dims { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+
+.text-list { display: flex; flex-direction: column; gap: 6px; }
+.text-item {
+  display: flex; align-items: center; gap: 7px; padding: 8px 8px;
+  border-radius: var(--radius); cursor: pointer; transition: background 0.1s, border-color 0.1s;
+  font-size: 12px; background: var(--bg-primary); border: 1px solid var(--border);
+}
+.text-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.text-item.selected { background: rgba(74, 168, 255, 0.12); border-color: rgba(74, 168, 255, 0.42); outline: none; }
+.text-icon { width: 18px; text-align: center; color: var(--accent); font-weight: 700; }
+.text-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.list-collapsed { height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-top: 1px solid var(--border); background: var(--bg-secondary); }
+.expand-list-btn,
+.collapse-list-btn {
+  height: 24px; padding: 0 9px; background: var(--bg-primary); border: 1px solid var(--border);
+  color: var(--text-secondary); font-size: 11px;
+}
+.expand-list-btn:hover,
+.collapse-list-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.list-panel { min-height: 20%; max-height: 80%; flex-shrink: 0; position: relative; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--bg-secondary); }
+.list-resizer { height: 8px; flex-shrink: 0; cursor: row-resize; position: relative; background: var(--bg-secondary); }
+.list-resizer::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 46px;
+  height: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+.list-resizer:hover::before { background: var(--accent); }
+.list-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px 6px; flex-shrink: 0; }
+.list-title { font-size: 12px; font-weight: 700; color: var(--text-primary); }
+.list-meta { margin-top: 2px; font-size: 10px; color: var(--text-muted); }
+.list-search { padding: 0 10px 8px; flex-shrink: 0; }
+.list-search input {
+  width: 100%; height: 30px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-primary); color: var(--text-primary); padding: 0 9px; outline: none;
+}
+.list-search input:focus { border-color: var(--accent); }
+.list-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 12px; }
+.list-subtitle { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 5px; color: var(--text-muted); font-size: 11px; font-weight: 700; }
+.text-subtitle { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.list-empty { padding: 7px 2px; }
 
 .layer-list { display: flex; flex-direction: column; gap: 2px; max-height: 120px; overflow-y: auto; }
 .layer-item { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: var(--radius); cursor: grab; font-size: 11px; }
@@ -778,7 +860,6 @@ async function handleBatchExport() {
   font-size: 10px; padding: 1px 8px; border-radius: 3px; cursor: pointer;
 }
 .clear-all-btn:hover { border-color: var(--danger); color: var(--danger); }
-.export-btn { width: 100%; flex-shrink: 0; }
 .transform-row { display: flex; gap: 6px; margin-bottom: 6px; }
 .tf-btn {
   flex: 1; padding: 5px 8px; background: var(--bg-primary); border: 1px solid var(--border);
