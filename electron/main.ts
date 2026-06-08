@@ -9,6 +9,22 @@ const __dirname = path.dirname(__filename)
 
 // 开发模式检测
 const isDev = !app.isPackaged
+let mainWindow: BrowserWindow | null = null
+
+function imageFileToDataUrl(filePath: string): { name: string; dataUrl: string } {
+  const ext = path.extname(filePath).toLowerCase()
+  const mimeTypes: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+  }
+  const data = fs.readFileSync(filePath)
+  return {
+    name: path.basename(filePath),
+    dataUrl: `data:${mimeTypes[ext] || 'application/octet-stream'};base64,${data.toString('base64')}`,
+  }
+}
 
 // 模型和 WASM 资源根目录
 // - 开发：项目根目录的 public/ 和 node_modules/onnxruntime-web/dist/
@@ -41,6 +57,10 @@ function createWindow() {
     },
     show: false,
     backgroundColor: '#1a1a2e',
+  })
+  mainWindow = win
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
   })
 
   // 窗口准备好后再显示，避免白屏
@@ -121,6 +141,21 @@ function setupCors() {
 }
 
 function buildMenu() {
+  function getTargetWindow(win?: BrowserWindow): BrowserWindow | null {
+    return (
+      win ??
+      BrowserWindow.getFocusedWindow() ??
+      mainWindow ??
+      BrowserWindow.getAllWindows().find(w => !w.isDestroyed()) ??
+      null
+    )
+  }
+
+  function sendEditCommand(win: BrowserWindow | undefined, command: string) {
+    const target = getTargetWindow(win)
+    target?.webContents.send('menu-command', command)
+  }
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: '文件',
@@ -129,15 +164,17 @@ function buildMenu() {
           label: '导入图片',
           accelerator: 'CmdOrCtrl+O',
           click: (_menuItem, win) => {
-            if (win) {
-              dialog.showOpenDialog(win, {
+            const target = getTargetWindow(win)
+            if (target) {
+              dialog.showOpenDialog(target, {
                 properties: ['openFile', 'multiSelections'],
                 filters: [
                   { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
                 ],
               }).then(result => {
                 if (!result.canceled && result.filePaths.length > 0) {
-                  win.webContents.send('open-files', result.filePaths)
+                  const files = result.filePaths.map(imageFileToDataUrl)
+                  target.webContents.send('open-files', files)
                 }
               })
             }
@@ -154,13 +191,37 @@ function buildMenu() {
     {
       label: '编辑',
       submenu: [
-        { label: '撤销', accelerator: 'CmdOrCtrl+Z', role: 'undo' as const },
-        { label: '重做', accelerator: 'CmdOrCtrl+Y', role: 'redo' as const },
+        {
+          label: '撤销',
+          accelerator: 'CmdOrCtrl+Z',
+          click: (_menuItem, win) => sendEditCommand(win, 'undo'),
+        },
+        {
+          label: '重做',
+          accelerator: 'CmdOrCtrl+Y',
+          click: (_menuItem, win) => sendEditCommand(win, 'redo'),
+        },
         { type: 'separator' },
-        { label: '剪切', role: 'cut' as const },
-        { label: '复制', role: 'copy' as const },
-        { label: '粘贴', role: 'paste' as const },
-        { label: '全选', role: 'selectAll' as const },
+        {
+          label: '剪切',
+          accelerator: 'CmdOrCtrl+X',
+          click: (_menuItem, win) => sendEditCommand(win, 'cut'),
+        },
+        {
+          label: '复制',
+          accelerator: 'CmdOrCtrl+C',
+          click: (_menuItem, win) => sendEditCommand(win, 'copy'),
+        },
+        {
+          label: '粘贴',
+          accelerator: 'CmdOrCtrl+V',
+          click: (_menuItem, win) => sendEditCommand(win, 'paste'),
+        },
+        {
+          label: '全选',
+          accelerator: 'CmdOrCtrl+A',
+          click: (_menuItem, win) => sendEditCommand(win, 'select-all'),
+        },
       ],
     },
     {
@@ -238,6 +299,9 @@ function setupIPC() {
 
 // 禁用远程调试端口（安全加固）
 app.commandLine.appendSwitch('remote-debugging-port', '0')
+// Electron 的 Chromium 在部分机器上不会默认暴露 WebGPU；FP16 ONNX 模型需要 WebGPU + shader-f16。
+app.commandLine.appendSwitch('enable-unsafe-webgpu')
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
 
 // 注册 localcut:// 为特权协议（必须在 app.whenReady() 之前调用）
 // - standard: 让 URL 像 http:// 一样解析
@@ -256,6 +320,9 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 app.whenReady().then(() => {
+  if (isDev) {
+    console.log('GPU feature status:', app.getGPUFeatureStatus())
+  }
   setupProtocol()
   setupCors()
   buildMenu()

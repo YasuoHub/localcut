@@ -123,7 +123,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeyDown))
 async function handleRunInference() {
   if (!canRunInference.value) return
   try {
-    await loadModel(store.selectedModel)
+    const loaded = await loadModel(store.selectedModel)
+    if (!loaded) return
     if (store.stage === 'ready' && store.sourceImage) {
       await runInference()
     }

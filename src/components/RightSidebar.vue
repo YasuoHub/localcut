@@ -136,6 +136,7 @@ const editText = ref('')
 const editFontSize = ref(44)
 const editFontColor = ref('#ffffff')
 const editFontWeight = ref<'normal' | 'bold'>('bold')
+const textEditSnapshotTaken = ref(false)
 
 watch(() => editor.selectedText, (t, old) => {
   if (t && t.id !== old?.id) {
@@ -143,27 +144,42 @@ watch(() => editor.selectedText, (t, old) => {
     editFontSize.value = t.fontSize
     editFontColor.value = t.fontColor
     editFontWeight.value = t.fontWeight
+    textEditSnapshotTaken.value = false
   }
 }, { immediate: true })
 
-function updateText() {
-  if (!editor.selectedText) return
-  const trimmed = editText.value.trim()
-  if (!trimmed) {
-    editor.deleteText(editor.selectedText.id)
-    return
-  }
+function ensureTextEditSnapshot() {
+  if (!editor.selectedText || textEditSnapshotTaken.value) return
   history.snapshot()
-  editor.selectedText.text = trimmed
-  editor.selectedText.fontSize = editFontSize.value
-  editor.selectedText.fontColor = editFontColor.value
-  editor.selectedText.fontWeight = editFontWeight.value
+  textEditSnapshotTaken.value = true
 }
 
-function onFontColorInput() {
+function applyTextEdits() {
   if (!editor.selectedText) return
-  editor.selectedText.fontColor = editFontColor.value
+  const selectedText = editor.selectedText
+  const hasChanged =
+    selectedText.text !== editText.value ||
+    selectedText.fontSize !== editFontSize.value ||
+    selectedText.fontColor !== editFontColor.value ||
+    selectedText.fontWeight !== editFontWeight.value
+  if (!hasChanged) return
+
+  ensureTextEditSnapshot()
+  selectedText.text = editText.value
+  selectedText.fontSize = editFontSize.value
+  selectedText.fontColor = editFontColor.value
+  selectedText.fontWeight = editFontWeight.value
   editor.invalidateCanvas()
+}
+
+function commitTextEdits() {
+  if (!editor.selectedText) return
+  if (editor.selectedText.text.trim()) {
+    textEditSnapshotTaken.value = false
+    return
+  }
+  editor.deleteText(editor.selectedText.id)
+  textEditSnapshotTaken.value = false
 }
 
 // ---- global export state ----
@@ -198,14 +214,17 @@ async function createUpscaleFn(): Promise<((canvas: HTMLCanvasElement) => Promis
     const ctx = canvas.getContext('2d')!
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height)
     startPolling()
-    const resultData = await upscaleImage(imgData)
-    stopPolling?.()
-    stopPolling = null
-    const result = document.createElement('canvas')
-    result.width = resultData.width
-    result.height = resultData.height
-    result.getContext('2d')!.putImageData(resultData, 0, 0)
-    return result
+    try {
+      const resultData = await upscaleImage(imgData)
+      const result = document.createElement('canvas')
+      result.width = resultData.width
+      result.height = resultData.height
+      result.getContext('2d')!.putImageData(resultData, 0, 0)
+      return result
+    } finally {
+      stopPolling?.()
+      stopPolling = null
+    }
   }
 }
 
@@ -477,12 +496,12 @@ async function handleBatchExport() {
     <!-- Text properties -->
     <section class="section" v-if="editor.selectedText">
       <div class="section-title">文字属性</div>
-      <div class="field"><label>内容</label><input type="text" v-model="editText" placeholder="输入文字..." @blur="updateText" @keyup.enter="updateText" /></div>
+      <div class="field"><label>内容</label><input type="text" v-model="editText" placeholder="输入文字..." @input="applyTextEdits" @blur="commitTextEdits" /></div>
       <div class="field-row">
-        <div class="field"><label>字号</label><input type="number" v-model.number="editFontSize" min="8" max="200" @change="updateText" /></div>
-        <div class="field"><label>粗细</label><select v-model="editFontWeight" @change="updateText" class="select-input"><option value="normal">常规</option><option value="bold">粗体</option></select></div>
+        <div class="field"><label>字号</label><input type="number" v-model.number="editFontSize" min="8" max="200" @input="applyTextEdits" /></div>
+        <div class="field"><label>粗细</label><select v-model="editFontWeight" @change="applyTextEdits" class="select-input"><option value="normal">常规</option><option value="bold">粗体</option></select></div>
       </div>
-      <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @input="onFontColorInput" @change="updateText" class="color-input" /></div>
+      <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @input="applyTextEdits" class="color-input" /></div>
     </section>
 
     <!-- No selection -->

@@ -1,7 +1,8 @@
-import * as ort from 'onnxruntime-web'
+import * as ort from 'onnxruntime-web/webgpu'
 import { ORT_WASM_PATH } from '../constants/modelUrls'
 
 ort.env.wasm.wasmPaths = ORT_WASM_PATH
+ort.env.logLevel = 'error'
 
 let session: ort.InferenceSession | null = null
 

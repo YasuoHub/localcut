@@ -117,6 +117,7 @@ export function useCanvasEngine(
   const panStartMouse = ref<{ sx: number; sy: number }>({ sx: 0, sy: 0 })
   const panStartOffset = ref<{ ox: number; oy: number }>({ ox: 0, oy: 0 })
   const spaceHeld = ref(false)
+  const ctrlOrMetaHeld = ref(false)
 
   // marquee selection state
   const isMarquee = ref(false)
@@ -132,11 +133,23 @@ export function useCanvasEngine(
   const layerDragStartPositions = ref<Map<string, { x: number; y: number }> | null>(null)
 
   // clipboard
-  const clipboard = ref<{ shape: ShapeType; width: number; height: number; name: string; origX: number; origY: number; points?: { x: number; y: number }[] } | null>(null)
+  interface ClipboardRegion {
+    shape: ShapeType
+    width: number
+    height: number
+    name: string
+    origX: number
+    origY: number
+    borderRadius?: number
+    points?: { x: number; y: number }[]
+  }
+
+  const clipboard = ref<ClipboardRegion[]>([])
   const pasteCount = ref(0)
 
   let renderRaf = 0
   let dirty = true
+  let cleanupKeyboardListeners: (() => void) | null = null
 
   function markDirty() {
     dirty = true
@@ -427,6 +440,28 @@ export function useCanvasEngine(
     return null
   }
 
+  function hitTestActiveLayerHandle(sx: number, sy: number, threshold = 12): string | null {
+    const layer = getActiveLayer()
+    if (!layer || !layer.visible || layers.value.length === 0) return null
+
+    const lx = (layer.x - view.offsetX) * view.scale
+    const ly = (layer.y - view.offsetY) * view.scale
+    const lw = layer.image.naturalWidth * layer.scaleX * view.scale
+    const lh = layer.image.naturalHeight * layer.scaleY * view.scale
+    const lcx = lx + lw / 2
+    const lcy = ly + lh / 2
+
+    if (Math.abs(sx - lx) < threshold && Math.abs(sy - ly) < threshold) return 'nw'
+    if (Math.abs(sx - (lx + lw)) < threshold && Math.abs(sy - ly) < threshold) return 'ne'
+    if (Math.abs(sx - lx) < threshold && Math.abs(sy - (ly + lh)) < threshold) return 'sw'
+    if (Math.abs(sx - (lx + lw)) < threshold && Math.abs(sy - (ly + lh)) < threshold) return 'se'
+    if (Math.abs(sx - lcx) < threshold && Math.abs(sy - ly) < threshold) return 'n'
+    if (Math.abs(sx - lcx) < threshold && Math.abs(sy - (ly + lh)) < threshold) return 's'
+    if (Math.abs(sx - lx) < threshold && Math.abs(sy - lcy) < threshold) return 'w'
+    if (Math.abs(sx - (lx + lw)) < threshold && Math.abs(sy - lcy) < threshold) return 'e'
+    return null
+  }
+
   // layer dragging state
   const isDraggingLayer = ref(false)
   const isResizingLayer = ref(false)
@@ -475,38 +510,60 @@ export function useCanvasEngine(
   // --- clipboard ---
 
   function copySelectedRegion() {
-    const sel = getSelectedRegion()
-    if (!sel) return
-    clipboard.value = { shape: sel.shape, width: sel.width, height: sel.height, name: sel.name, origX: sel.x, origY: sel.y, points: sel.points ? sel.points.map(p => ({ ...p })) : undefined }
+    const selectedIds = selectedRegionIds.value.size > 0
+      ? selectedRegionIds.value
+      : new Set(selectedRegionId.value ? [selectedRegionId.value] : [])
+    const selectedRegions = regions.filter(r => selectedIds.has(r.id))
+    if (selectedRegions.length === 0) return
+
+    clipboard.value = selectedRegions.map(r => ({
+      shape: r.shape,
+      width: r.width,
+      height: r.height,
+      name: r.name,
+      origX: r.x,
+      origY: r.y,
+      borderRadius: r.borderRadius,
+      points: r.points ? r.points.map(p => ({ ...p })) : undefined,
+    }))
     pasteCount.value = 0
   }
 
   function pasteRegion() {
-    if (!clipboard.value || !getActiveImage()) return
-    const src = clipboard.value
+    if (clipboard.value.length === 0 || !getActiveImage()) return
     const offset = 20 + pasteCount.value * 20
-    const newX = src.origX + offset
-    const newY = src.origY + offset
-    const clamped = clampToImage(newX, newY, src.width, src.height)
-    // generate unique name with incrementing suffix
-    let baseName = `${src.name}_copy`
-    let pasteName = baseName
-    let counter = 2
-    while (regions.some(r => r.name === pasteName)) {
-      pasteName = `${baseName}${counter}`
-      counter++
-    }
-    const region: CropRegion = {
-      id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      name: pasteName,
-      ...clamped,
-      shape: src.shape,
-      points: src.points ? src.points.map(p => ({ x: p.x + offset, y: p.y + offset })) : undefined,
-    }
-    pasteCount.value++
     snapshot?.()
-    regions.push(region)
-    selectRegion(region.id)
+    const existingNames = new Set(regions.map(r => r.name))
+    const pastedIds: string[] = []
+
+    for (const src of clipboard.value) {
+      const clamped = clampToImage(src.origX + offset, src.origY + offset, src.width, src.height)
+      const dx = clamped.x - src.origX
+      const dy = clamped.y - src.origY
+      const baseName = `${src.name}_copy`
+      let pasteName = baseName
+      let counter = 2
+      while (existingNames.has(pasteName)) {
+        pasteName = `${baseName}${counter}`
+        counter++
+      }
+      existingNames.add(pasteName)
+
+      const region: CropRegion = {
+        id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: pasteName,
+        ...clamped,
+        shape: src.shape,
+        borderRadius: src.borderRadius,
+        points: src.points ? src.points.map(p => ({ x: p.x + dx, y: p.y + dy })) : undefined,
+      }
+      regions.push(region)
+      pastedIds.push(region.id)
+    }
+
+    pasteCount.value++
+    selectedRegionIds.value = pastedIds.length > 1 ? new Set(pastedIds) : new Set()
+    selectRegion(pastedIds[0] ?? null)
     markDirty()
   }
 
@@ -573,25 +630,15 @@ export function useCanvasEngine(
     if ((e.ctrlKey || e.metaKey) && activeTool.value !== 'select') {
       // check if clicking on a resize handle of the active layer first
       const al = getActiveLayer()
-      let ctrlOnHandle = false
-      if (al && al.visible) {
-        const hsz = 12
-        const lx2 = (al.x - view.offsetX) * view.scale
-        const ly2 = (al.y - view.offsetY) * view.scale
-        const lw2 = al.image.naturalWidth * al.scaleX * view.scale
-        const lh2 = al.image.naturalHeight * al.scaleY * view.scale
-        const lcx2 = lx2 + lw2 / 2, lcy2 = ly2 + lh2 / 2
-        ctrlOnHandle =
-          (Math.abs(sx - lx2) < hsz && Math.abs(sy - ly2) < hsz) ||
-          (Math.abs(sx - (lx2 + lw2)) < hsz && Math.abs(sy - ly2) < hsz) ||
-          (Math.abs(sx - lx2) < hsz && Math.abs(sy - (ly2 + lh2)) < hsz) ||
-          (Math.abs(sx - (lx2 + lw2)) < hsz && Math.abs(sy - (ly2 + lh2)) < hsz) ||
-          (Math.abs(sx - lcx2) < hsz && Math.abs(sy - ly2) < hsz) ||
-          (Math.abs(sx - lcx2) < hsz && Math.abs(sy - (ly2 + lh2)) < hsz) ||
-          (Math.abs(sx - lx2) < hsz && Math.abs(sy - lcy2) < hsz) ||
-          (Math.abs(sx - (lx2 + lw2)) < hsz && Math.abs(sy - lcy2) < hsz)
-      }
-      if (!ctrlOnHandle) {
+      const ctrlHandle = hitTestActiveLayerHandle(sx, sy)
+      if (al && ctrlHandle) {
+        snapshot?.()
+        isResizingLayer.value = true
+        layerResizeHandle.value = ctrlHandle
+        dragStartLayerPos.value = { x: al.x, y: al.y, sx: al.scaleX, sy: al.scaleY, w: al.image.naturalWidth, h: al.image.naturalHeight }
+        dragStartMouse.value = { sx, sy }
+        return
+      } else {
         const hitL2 = hitTestLayer(sx, sy)
         if (hitL2) {
           activeLayerId.value = hitL2.id
@@ -606,6 +653,7 @@ export function useCanvasEngine(
       const cp = hitTestControlPoint(sx, sy)
       if (cp) {
         // resize / move via control points
+        snapshot?.()
         if (cp.isText) {
           selectText(cp.id)
           isDragging.value = true
@@ -648,6 +696,7 @@ export function useCanvasEngine(
       }
       const hitT2 = hitTestText(sx, sy)
       if (hitT2) {
+        snapshot?.()
         selectText(hitT2.id)
         isDragging.value = true
         draggingText.value = true
@@ -719,6 +768,7 @@ export function useCanvasEngine(
       // check if clicking existing text
       const hitT = hitTestText(sx, sy)
       if (hitT) {
+        snapshot?.()
         selectText(hitT.id)
         isDragging.value = true
         draggingText.value = true
@@ -835,23 +885,7 @@ export function useCanvasEngine(
     const hitL = hitTestLayer(sx, sy)
     // also check active layer handles even if slightly outside bbox
     const al2 = getActiveLayer()
-    let handleHit: string | null = null
-    if (al2 && al2.visible && layers.value.length > 0) {
-      const hsz = 12
-      const lx = (al2.x - view.offsetX) * view.scale
-      const ly = (al2.y - view.offsetY) * view.scale
-      const lw = al2.image.naturalWidth * al2.scaleX * view.scale
-      const lh = al2.image.naturalHeight * al2.scaleY * view.scale
-      const lcx = lx + lw / 2, lcy = ly + lh / 2
-      if (Math.abs(sx - lx) < hsz && Math.abs(sy - ly) < hsz) handleHit = 'nw'
-      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - ly) < hsz) handleHit = 'ne'
-      else if (Math.abs(sx - lx) < hsz && Math.abs(sy - (ly + lh)) < hsz) handleHit = 'sw'
-      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - (ly + lh)) < hsz) handleHit = 'se'
-      else if (Math.abs(sx - lcx) < hsz && Math.abs(sy - ly) < hsz) handleHit = 'n'
-      else if (Math.abs(sx - lcx) < hsz && Math.abs(sy - (ly + lh)) < hsz) handleHit = 's'
-      else if (Math.abs(sx - lx) < hsz && Math.abs(sy - lcy) < hsz) handleHit = 'w'
-      else if (Math.abs(sx - (lx + lw)) < hsz && Math.abs(sy - lcy) < hsz) handleHit = 'e'
-    }
+    const handleHit = hitTestActiveLayerHandle(sx, sy)
     if (handleHit && (activeTool.value === 'select' || e.ctrlKey) && !hit && !hitT2) {
       snapshot?.()
       isResizingLayer.value = true
@@ -1392,6 +1426,14 @@ export function useCanvasEngine(
       return
     }
 
+    if (activeTool.value !== 'select' && ctrlOrMetaHeld.value) {
+      const layerHandle = hitTestActiveLayerHandle(sx, sy, 10)
+      if (layerHandle) {
+        canvas.style.cursor = getResizeCursor(`resize-${layerHandle}`)
+        return
+      }
+    }
+
     if (activeTool.value === 'text') {
       canvas.style.cursor = 'text'
       return
@@ -1891,6 +1933,9 @@ export function useCanvasEngine(
     canvas.addEventListener('contextmenu', handleContextMenu)
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        ctrlOrMetaHeld.value = true
+      }
       if (e.code === 'Space' && !e.repeat) {
         e.preventDefault()
         spaceHeld.value = true
@@ -1898,15 +1943,32 @@ export function useCanvasEngine(
       }
     }
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        ctrlOrMetaHeld.value = false
+      }
       if (e.code === 'Space') spaceHeld.value = false
+    }
+    const onWindowBlur = () => {
+      ctrlOrMetaHeld.value = false
+      spaceHeld.value = false
     }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onWindowBlur)
+    cleanupKeyboardListeners = () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onWindowBlur)
+      cleanupKeyboardListeners = null
+    }
 
     markDirty()
   }
 
-  function destroy() { cancelAnimationFrame(renderRaf) }
+  function destroy() {
+    cancelAnimationFrame(renderRaf)
+    cleanupKeyboardListeners?.()
+  }
 
   return {
     view, isDrawing, loadImage, fitToCanvas,
@@ -1914,7 +1976,7 @@ export function useCanvasEngine(
     initCanvas, destroy, scheduleRender,
     copySelectedRegion, pasteRegion,
     canCopy: () => !!getSelectedRegion(),
-    canPaste: () => !!clipboard.value && !!getActiveImage(),
+    canPaste: () => clipboard.value.length > 0 && !!getActiveImage(),
     getWorkingCanvas,
     cancelCustomPolygon,
     finalizeCustomPolygon,

@@ -101,7 +101,6 @@ export function useSuperResolution() {
   function waitForWorker(type: string, timeout = 120_000): Promise<any> {
     const w = getWorker()
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Worker 响应超时')), timeout)
       const handler = (e: MessageEvent) => {
         if (e.data.type === type) {
           clearTimeout(t)
@@ -114,6 +113,10 @@ export function useSuperResolution() {
           reject(new Error(e.data.message))
         }
       }
+      const t = setTimeout(() => {
+        w.removeEventListener('message', handler)
+        reject(new Error(`Worker 响应超时: ${type}`))
+      }, timeout)
       w.addEventListener('message', handler)
     })
   }
@@ -137,7 +140,7 @@ export function useSuperResolution() {
       const w = getWorker()
       const slice = buffer.slice(0)
       w.postMessage({ type: 'load_model', modelData: slice }, { transfer: [slice] })
-      await waitForWorker('model_loaded')
+      await waitForWorker('model_loaded', 300_000)
 
       modelLoaded.value = true
       progress.value = { message: '', percent: 100 }
@@ -214,14 +217,58 @@ export function useSuperResolution() {
   }
 
   async function upscaleSingleTile(imageData: ImageData): Promise<ImageData> {
+    const sourceWidth = imageData.width
+    const sourceHeight = imageData.height
+    const modelInput = padToEvenDimensions(imageData)
     const w = getWorker()
-    w.postMessage({ type: 'upscale', imageData })
-    const result = await waitForWorker('upscale_complete')
-    return new ImageData(
+    w.postMessage({ type: 'upscale', imageData: modelInput })
+    const result = await waitForWorker('upscale_complete', 600_000)
+    const resultImageData = new ImageData(
       new Uint8ClampedArray(result.result.data),
       result.result.width,
       result.result.height,
     )
+    if (resultImageData.width === sourceWidth * 2 && resultImageData.height === sourceHeight * 2) {
+      return resultImageData
+    }
+    return cropImageData(resultImageData, sourceWidth * 2, sourceHeight * 2)
+  }
+
+  function padToEvenDimensions(imageData: ImageData): ImageData {
+    const evenW = imageData.width % 2 === 0 ? imageData.width : imageData.width + 1
+    const evenH = imageData.height % 2 === 0 ? imageData.height : imageData.height + 1
+    if (evenW === imageData.width && evenH === imageData.height) return imageData
+
+    const padded = new ImageData(evenW, evenH)
+    const src = imageData.data
+    const dst = padded.data
+    for (let y = 0; y < evenH; y++) {
+      const srcY = Math.min(y, imageData.height - 1)
+      for (let x = 0; x < evenW; x++) {
+        const srcX = Math.min(x, imageData.width - 1)
+        const srcIdx = (srcY * imageData.width + srcX) * 4
+        const dstIdx = (y * evenW + x) * 4
+        dst[dstIdx] = src[srcIdx]
+        dst[dstIdx + 1] = src[srcIdx + 1]
+        dst[dstIdx + 2] = src[srcIdx + 2]
+        dst[dstIdx + 3] = src[srcIdx + 3]
+      }
+    }
+    return padded
+  }
+
+  function cropImageData(imageData: ImageData, width: number, height: number): ImageData {
+    const canvas = document.createElement('canvas')
+    canvas.width = imageData.width
+    canvas.height = imageData.height
+    canvas.getContext('2d')!.putImageData(imageData, 0, 0)
+
+    const cropped = document.createElement('canvas')
+    cropped.width = width
+    cropped.height = height
+    const ctx = cropped.getContext('2d')!
+    ctx.drawImage(canvas, 0, 0)
+    return ctx.getImageData(0, 0, width, height)
   }
 
   function imageDataToCanvas(imageData: ImageData): Promise<HTMLCanvasElement> {

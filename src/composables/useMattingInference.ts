@@ -63,7 +63,7 @@ export function useMattingInference() {
     })
   }
 
-  async function loadModel(modelType: MattingModelType): Promise<void> {
+  async function loadModel(modelType: MattingModelType): Promise<boolean> {
     store.lastError = ''
     store.setStage('loading_model')
     store.setProgress('检查模型缓存...', 10)
@@ -107,21 +107,24 @@ export function useMattingInference() {
 
       store.setStage('ready')
       store.setProgress('模型就绪', 100)
+      return true
     } catch (err: any) {
       if (err.name === 'AbortError') {
         store.setStage('ready')
         store.setProgress('', 0)
+        return false
       } else {
         store.setStage('ready')
         store.setProgress('', 0)
         store.lastError = err.message || '模型加载失败'
+        throw err
       }
     }
   }
 
   async function runInference(): Promise<void> {
     if (!store.sourceImage || !modelReady) {
-      store.lastError = '图片或模型未就绪'
+      if (!store.lastError) store.lastError = '图片或模型未就绪'
       return
     }
 
@@ -207,6 +210,9 @@ export function useMattingInference() {
       store.setStage('ready')
       store.setProgress('', 0)
       store.lastError = err.message || '推理失败'
+    } finally {
+      const editor = useEditorStore()
+      editor.isHeavyProcessing = false
     }
   }
 

@@ -1,7 +1,8 @@
-import * as ort from 'onnxruntime-web'
+import * as ort from 'onnxruntime-web/webgpu'
 import { ORT_WASM_PATH } from '../constants/modelUrls'
 
 ort.env.wasm.wasmPaths = ORT_WASM_PATH
+ort.env.logLevel = 'error'
 
 let session: ort.InferenceSession | null = null
 
@@ -26,7 +27,7 @@ async function handleLoadModel(modelData: ArrayBuffer) {
     if (msg.includes('float16') || msg.includes('fp16') || msg.includes('not supported')) {
       self.postMessage({
         type: 'error',
-        message: '精细模型(FP16)需要 WebGPU，您的系统 WebGPU 不可用。请切换到快速模型(INT8)。',
+        message: '精细模型(FP16)需要 WebGPU FP16 能力，当前 ONNX Runtime WebGPU 初始化失败。请尝试更新显卡驱动或切换到快速模型(INT8)。',
       })
       return
     }

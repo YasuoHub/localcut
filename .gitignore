@@ -1,6 +1,5 @@
 dist
+dist-electron
 node_modules
-public/wasm/
-public/models/
 *.tsbuildinfo
 example
