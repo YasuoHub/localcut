@@ -215,6 +215,7 @@ defineExpose({
   deleteRegion, deleteText,
   loadImage: engine.loadImage,
   copySelectedRegion, pasteRegion,
+  fitToCanvas: engine.fitToCanvas,
   cancelCustomPolygon: engine.cancelCustomPolygon,
   finalizeCustomPolygon: engine.finalizeCustomPolygon,
   scheduleRender: engine.scheduleRender,

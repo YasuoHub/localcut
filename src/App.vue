@@ -24,7 +24,7 @@ function addImageLayerFromDataUrl(dataUrl: string, name?: string) {
   const img = new Image()
   img.onload = () => {
     editor.addLayer(img, name)
-    canvasWorkspace.value?.scheduleRender()
+    canvasWorkspace.value?.fitToCanvas()
   }
   img.src = dataUrl
 }

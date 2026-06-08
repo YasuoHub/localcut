@@ -1,36 +1,104 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useEditorStore } from '../../stores/editor'
+import { useExportStore } from '../../stores/export'
 import { useHistoryStore } from '../../stores/history'
 import { useCropTemplates } from '../../composables/useCropTemplates'
+import type { CropTemplate, CropTemplateCategory, TemplateConflictMode } from '../../types'
 
 const editor = useEditorStore()
+const exp = useExportStore()
 const history = useHistoryStore()
-const { templates, saveTemplate, applyTemplate, deleteTemplate, renameTemplate } = useCropTemplates()
+const {
+  templates,
+  saveTemplate,
+  applyTemplate,
+  deleteTemplate,
+  renameTemplate,
+  updateTemplateCategory,
+  toggleFavorite,
+  duplicateTemplate,
+  exportTemplates,
+  importTemplatesFromText,
+} = useCropTemplates()
+
+const categoryOptions: { value: CropTemplateCategory; label: string }[] = [
+  { value: 'general', label: '通用' },
+  { value: 'ecommerce-main', label: '电商主图' },
+  { value: 'detail-long', label: '详情长图' },
+  { value: 'store-decoration', label: '店铺装修' },
+  { value: 'custom', label: '自定义' },
+]
+
+const conflictOptions: { value: TemplateConflictMode; label: string }[] = [
+  { value: 'rename', label: '重命名' },
+  { value: 'overwrite', label: '覆盖' },
+  { value: 'skip', label: '跳过' },
+]
 
 const saveName = ref('')
-
-const canSave = computed(() => {
-  return editor.activeLayer && editor.regions.length > 0 && saveName.value.trim()
+const saveCategory = ref<CropTemplateCategory>('general')
+const saveExportOptions = ref({
+  size: true,
+  fit: true,
+  fill: true,
+  naming: true,
+  formatQuality: true,
 })
 
-function handleSave() {
-  if (!canSave.value) return
-  saveTemplate(saveName.value.trim(), editor.regions, editor.activeLayer!)
-  saveName.value = ''
-}
-
 const selectedTplId = ref<string | null>(null)
-
-function handleApply() {
-  if (!selectedTplId.value || !editor.activeLayer) return
-  history.snapshot()
-  const regions = applyTemplate(selectedTplId.value, editor.activeLayer!)
-  editor.regions.push(...regions)
-}
+const applyMode = ref<'regions' | 'full'>('full')
+const searchText = ref('')
+const categoryFilter = ref<'all' | CropTemplateCategory>('all')
+const selectedExportIds = ref<Set<string>>(new Set())
+const importConflictMode = ref<TemplateConflictMode>('rename')
+const importMessage = ref('')
+const fileInput = ref<HTMLInputElement | null>(null)
 
 const renamingId = ref<string | null>(null)
 const renameValue = ref('')
+
+const canSave = computed(() => Boolean(editor.activeLayer && editor.regions.length > 0 && saveName.value.trim()))
+
+const selectedTemplate = computed(() => templates.value.find(t => t.id === selectedTplId.value) ?? null)
+
+const sortedTemplates = computed(() => {
+  const keyword = searchText.value.trim().toLowerCase()
+  return [...templates.value]
+    .filter(t => categoryFilter.value === 'all' || t.category === categoryFilter.value)
+    .filter(t => !keyword || t.name.toLowerCase().includes(keyword))
+    .sort((a, b) => {
+      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1
+      const aRecent = a.lastUsedAt ?? a.createdAt
+      const bRecent = b.lastUsedAt ?? b.createdAt
+      return bRecent - aRecent
+    })
+})
+
+const exportSelectionCount = computed(() => selectedExportIds.value.size)
+
+function handleSave() {
+  if (!canSave.value) return
+  const exportSettings = exp.createTemplateExportSettings(saveExportOptions.value)
+  const tpl = saveTemplate(saveName.value.trim(), editor.regions, editor.activeLayer!, {
+    category: saveCategory.value,
+    exportSettings: Object.keys(exportSettings).length > 0 ? exportSettings : undefined,
+  })
+  selectedTplId.value = tpl.id
+  saveName.value = ''
+}
+
+function handleApply() {
+  if (!selectedTplId.value || !editor.activeLayer) return
+  const tpl = selectedTemplate.value
+  history.snapshot()
+  const regions = applyTemplate(selectedTplId.value, editor.activeLayer)
+  editor.regions.push(...regions)
+  editor.invalidateCanvas()
+  if (applyMode.value === 'full' && tpl?.exportSettings) {
+    exp.applyTemplateExportSettings(tpl.exportSettings)
+  }
+}
 
 function startRename(id: string, name: string) {
   renamingId.value = id
@@ -42,96 +110,360 @@ function finishRename(id: string) {
   if (name) renameTemplate(id, name)
   renamingId.value = null
 }
+
+function handleDelete(id: string) {
+  const tpl = templates.value.find(t => t.id === id)
+  if (!tpl) return
+  if (!window.confirm(`确认删除模板「${tpl.name}」？`)) return
+  deleteTemplate(id)
+  if (selectedTplId.value === id) selectedTplId.value = null
+  const next = new Set(selectedExportIds.value)
+  next.delete(id)
+  selectedExportIds.value = next
+}
+
+function handleDuplicate(id: string) {
+  const copy = duplicateTemplate(id)
+  if (copy) selectedTplId.value = copy.id
+}
+
+function toggleExportSelection(id: string) {
+  const next = new Set(selectedExportIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedExportIds.value = next
+}
+
+function downloadTemplateBundle(ids: string[]) {
+  const bundle = exportTemplates(ids)
+  if (!bundle) return
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = bundle.templates.length === 1 ? 'template.localcut-template.json' : 'templates.localcut-templates.json'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function exportSelected() {
+  downloadTemplateBundle([...selectedExportIds.value])
+}
+
+function exportAllVisible() {
+  downloadTemplateBundle(sortedTemplates.value.map(t => t.id))
+}
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+
+function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = () => {
+    const result = importTemplatesFromText(String(reader.result ?? ''), importConflictMode.value)
+    const warnings = result.issues.map(i => i.message).join('；')
+    importMessage.value = `导入 ${result.imported} 个，覆盖 ${result.overwritten} 个，重命名 ${result.renamed} 个，跳过 ${result.skipped} 个。${warnings ? ` ${warnings}` : ''}`
+    input.value = ''
+  }
+  reader.readAsText(file)
+}
+
+function categoryLabel(category: CropTemplateCategory) {
+  return categoryOptions.find(item => item.value === category)?.label ?? '通用'
+}
+
+function templateSummary(tpl: CropTemplate) {
+  const chunks = [`${tpl.regions.length}区`]
+  const settings = tpl.exportSettings
+  if (!settings) return chunks.join(' / ')
+
+  if (settings.batchUseCustomSize && settings.batchOutputWidth && settings.batchOutputHeight) {
+    chunks.push(`${settings.batchOutputWidth}x${settings.batchOutputHeight}`)
+  }
+  if (settings.batchFitMode) chunks.push(settings.batchFitMode)
+  if (settings.exportFormat) chunks.push(settings.exportFormat.toUpperCase())
+  if (settings.exportFormat && settings.exportFormat !== 'png' && settings.exportQuality) {
+    chunks.push(`${settings.exportQuality}%`)
+  }
+  return chunks.join(' / ')
+}
 </script>
 
 <template>
-  <section class="section">
-    <div class="section-title">模板</div>
-
-    <!-- save -->
-    <div class="field-row">
-      <div class="field" style="flex:1">
-        <input type="text" v-model="saveName" class="text-input" placeholder="模板名" @keyup.enter="handleSave" />
+  <section class="section template-assets">
+    <div class="section-title asset-title">
+      <div>
+        <span>模板资产</span>
+        <span class="title-sub">保存布局与导出规格</span>
       </div>
-      <div class="field">
-        <button class="btn-small" :disabled="!canSave" @click="handleSave">保存</button>
+      <span class="count">{{ templates.length }}</span>
+    </div>
+
+    <div class="asset-block create-block">
+      <div class="block-head">
+        <span>新建资产</span>
+        <span>{{ editor.regions.length }}区</span>
+      </div>
+      <div class="save-line">
+        <input type="text" v-model="saveName" class="text-input asset-name-input" placeholder="商品宫格 / 详情切片" @keyup.enter="handleSave" />
+        <button class="btn-small save-btn" :disabled="!canSave" @click="handleSave">保存</button>
+      </div>
+
+      <select class="select-input compact-select" v-model="saveCategory">
+        <option v-for="item in categoryOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+      </select>
+
+      <div class="option-label">随模板保存</div>
+      <div class="save-options">
+        <label class="option-chip locked"><input type="checkbox" checked disabled />区域</label>
+        <label class="option-chip"><input type="checkbox" v-model="saveExportOptions.size" />尺寸</label>
+        <label class="option-chip"><input type="checkbox" v-model="saveExportOptions.fit" />适配</label>
+        <label class="option-chip"><input type="checkbox" v-model="saveExportOptions.fill" />背景</label>
+        <label class="option-chip"><input type="checkbox" v-model="saveExportOptions.naming" />命名</label>
+        <label class="option-chip"><input type="checkbox" v-model="saveExportOptions.formatQuality" />格式</label>
       </div>
     </div>
 
-    <!-- list & apply -->
-    <div v-if="templates.length > 0" class="template-list">
+    <div class="asset-block library-block">
+      <div class="block-head">
+        <span>资产库</span>
+        <span>{{ sortedTemplates.length }}项</span>
+      </div>
+
+      <div class="filter-grid">
+        <input type="search" v-model="searchText" class="text-input search-input" placeholder="搜索模板" />
+        <select class="select-input" v-model="categoryFilter">
+          <option value="all">全部分类</option>
+          <option v-for="item in categoryOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+        </select>
+      </div>
+
+      <div class="import-export-row">
+        <select class="select-input conflict-select" v-model="importConflictMode" title="名称冲突处理">
+          <option v-for="item in conflictOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+        </select>
+        <button class="btn-ghost" @click="triggerImport">导入</button>
+        <button class="btn-ghost" :disabled="exportSelectionCount === 0" @click="exportSelected">导出选中</button>
+        <button class="btn-ghost" :disabled="sortedTemplates.length === 0" @click="exportAllVisible">导出列表</button>
+        <input ref="fileInput" type="file" accept=".json,.localcut-template.json,.localcut-templates.json,application/json" hidden @change="handleImportFile" />
+      </div>
+
+      <div v-if="importMessage" class="import-message">{{ importMessage }}</div>
+    </div>
+
+    <div v-if="selectedTemplate" class="asset-block selected-tools">
+      <div class="block-head">
+        <span>套用方式</span>
+        <span>{{ selectedTemplate.exportSettings ? '含配置' : '仅区域' }}</span>
+      </div>
+      <select class="select-input compact-select" :value="selectedTemplate.category" @change="updateTemplateCategory(selectedTemplate.id, ($event.target as HTMLSelectElement).value as CropTemplateCategory)">
+        <option v-for="item in categoryOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+      </select>
+      <div class="apply-mode segmented">
+        <label><input type="radio" value="regions" v-model="applyMode" /><span>只套区域</span></label>
+        <label :class="{ disabled: !selectedTemplate.exportSettings }"><input type="radio" value="full" v-model="applyMode" :disabled="!selectedTemplate.exportSettings" /><span>区域+配置</span></label>
+      </div>
+      <button class="btn-primary apply-btn" :disabled="!editor.activeLayer" @click="handleApply">
+        套用模板
+      </button>
+    </div>
+
+    <div v-if="sortedTemplates.length > 0" class="template-list scrollbar">
       <div
-        v-for="tpl in templates"
+        v-for="tpl in sortedTemplates"
         :key="tpl.id"
         class="template-item"
         :class="{ active: selectedTplId === tpl.id }"
         @click="selectedTplId = tpl.id"
       >
-        <span class="tpl-name" v-if="renamingId !== tpl.id" @dblclick.stop="startRename(tpl.id, tpl.name)">{{ tpl.name }}</span>
-        <input
-          v-else
-          class="tpl-rename-input"
-          v-model="renameValue"
-          @blur="finishRename(tpl.id)"
-          @keyup.enter="finishRename(tpl.id)"
-          @click.stop
-          autofocus
-        />
-        <span class="tpl-regions">{{ tpl.regions.length }}区</span>
-        <button class="tpl-delete" @click.stop="deleteTemplate(tpl.id)" title="删除模板">×</button>
+        <div class="tpl-select-col">
+          <input
+            type="checkbox"
+            class="tpl-check"
+            :checked="selectedExportIds.has(tpl.id)"
+            title="加入导出"
+            @click.stop
+            @change="toggleExportSelection(tpl.id)"
+          />
+          <button class="star-btn" :class="{ active: tpl.favorite }" title="收藏" @click.stop="toggleFavorite(tpl.id)">★</button>
+        </div>
+        <div class="tpl-main">
+          <div class="tpl-title-row">
+            <span v-if="renamingId !== tpl.id" class="tpl-name" @dblclick.stop="startRename(tpl.id, tpl.name)">{{ tpl.name }}</span>
+            <input
+              v-else
+              class="tpl-rename-input"
+              v-model="renameValue"
+              @blur="finishRename(tpl.id)"
+              @keyup.enter="finishRename(tpl.id)"
+              @click.stop
+              autofocus
+            />
+          </div>
+          <div class="tpl-meta">
+            <span class="category-badge">{{ categoryLabel(tpl.category) }}</span>
+            <span class="summary-text">{{ templateSummary(tpl) }}</span>
+          </div>
+        </div>
+        <div class="tpl-actions">
+          <button class="icon-btn" title="复制模板" @click.stop="handleDuplicate(tpl.id)">⧉</button>
+          <button class="icon-btn danger" title="删除模板" @click.stop="handleDelete(tpl.id)">×</button>
+        </div>
       </div>
-      <button class="btn-primary" style="margin-top:8px" :disabled="!editor.activeLayer || !selectedTplId" @click="handleApply">
-        套用模板
-      </button>
     </div>
-    <div v-else class="empty">暂无模板，保存当前区域以创建模板</div>
+    <div v-else class="empty">暂无匹配模板，保存当前区域以创建模板</div>
   </section>
 </template>
 
 <style scoped>
 .section { padding: 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 12px; }
-.field { margin-bottom: 10px; }
+.template-assets { display: flex; flex-direction: column; gap: 10px; }
+.section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--text-muted); display: flex; align-items: flex-start; justify-content: space-between; }
+.asset-title { margin-bottom: 0; }
+.asset-title > div { display: flex; flex-direction: column; gap: 3px; }
+.title-sub { font-size: 10px; font-weight: 400; letter-spacing: 0; color: var(--text-muted); opacity: 0.8; }
+.count {
+  background: rgba(79, 195, 247, 0.12); border: 1px solid rgba(79, 195, 247, 0.22);
+  padding: 1px 7px; border-radius: 999px; font-size: 10px; color: var(--accent);
+}
+.asset-block {
+  background: rgba(15, 15, 26, 0.58);
+  border: 1px solid rgba(79, 195, 247, 0.12);
+  border-radius: 8px;
+  padding: 9px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.block-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 7px; font-size: 10px; color: var(--text-muted);
+}
+.block-head span:first-child { color: var(--text-secondary); font-weight: 600; }
+.create-block { border-color: rgba(79, 195, 247, 0.18); }
+.library-block { padding-bottom: 8px; }
+.field { margin-bottom: 10px; min-width: 0; }
 .field-row { display: flex; gap: 8px; align-items: flex-end; }
 .field-row .field { flex: 1; }
-.text-input {
-  width: 100%; background: var(--bg-primary); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 6px 8px; color: var(--text-primary);
+.field-compact { flex: 0 0 auto !important; }
+.save-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-bottom: 7px; }
+.text-input,
+.select-input {
+  width: 100%; background: rgba(22, 22, 37, 0.9); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; color: var(--text-primary);
   font-size: 12px; outline: none; box-sizing: border-box;
 }
-.text-input:focus { border-color: var(--accent); }
-.btn-small {
-  padding: 6px 12px; background: var(--accent); color: #fff;
-  border: none; border-radius: var(--radius); font-size: 11px; cursor: pointer;
-  white-space: nowrap;
-  display:flex; align-items: center;
+.text-input:focus,
+.select-input:focus {
+  border-color: rgba(79, 195, 247, 0.8);
+  box-shadow: 0 0 0 2px rgba(79, 195, 247, 0.08);
 }
-.btn-small:hover { opacity: 0.9; }
-.btn-small:disabled { opacity: 0.5; cursor: default; }
-.template-list { max-height: 160px; overflow-y: auto; }
+.asset-name-input { font-weight: 600; }
+.compact-select { height: 30px; margin-bottom: 8px; }
+.option-label { margin: 8px 0 5px; color: var(--text-muted); font-size: 10px; }
+.btn-small,
+.btn-primary,
+.btn-ghost {
+  border: none; border-radius: 6px; font-size: 11px; cursor: pointer;
+  white-space: nowrap; transition: opacity 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-small { padding: 6px 12px; background: var(--accent); color: #071018; font-weight: 700; }
+.save-btn { height: 30px; }
+.btn-primary { width: 100%; padding: 8px 12px; background: var(--accent); color: #071018; font-size: 12px; font-weight: 700; }
+.btn-ghost { padding: 5px 7px; background: rgba(22, 22, 37, 0.9); color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-small:hover,
+.btn-primary:hover,
+.btn-ghost:hover { opacity: 0.95; border-color: rgba(79, 195, 247, 0.36); color: var(--text-primary); }
+.btn-small:disabled,
+.btn-primary:disabled,
+.btn-ghost:disabled { opacity: 0.45; cursor: default; }
+.save-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.option-chip {
+  height: 25px; display: flex; align-items: center; justify-content: center; gap: 4px;
+  border: 1px solid var(--border); border-radius: 6px; background: rgba(30, 30, 50, 0.54);
+  color: var(--text-muted); font-size: 10px; cursor: pointer; user-select: none;
+}
+.option-chip:has(input:checked) {
+  color: var(--text-primary);
+  border-color: rgba(79, 195, 247, 0.42);
+  background: rgba(79, 195, 247, 0.11);
+}
+.option-chip.locked { color: var(--accent); cursor: default; }
+.option-chip input { display: none; }
+.tpl-check { accent-color: var(--accent); }
+.filter-grid { display: grid; grid-template-columns: 1fr; gap: 6px; margin-bottom: 7px; }
+.search-input { padding-left: 9px; }
+.import-export-row { display: grid; grid-template-columns: 74px 1fr 1fr; gap: 5px; }
+.import-export-row .btn-ghost:last-of-type { grid-column: 2 / 4; }
+.conflict-select { font-size: 11px; padding-left: 6px; padding-right: 4px; }
+.import-message {
+  padding: 7px 8px; background: rgba(229, 164, 0, 0.08); border: 1px solid rgba(229, 164, 0, 0.18);
+  border-radius: 6px; color: #d9b45a; font-size: 10px; line-height: 1.45; margin-top: 7px;
+}
+.template-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
 .template-item {
-  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
-  border-radius: var(--radius); cursor: pointer; font-size: 12px;
+  display: flex; align-items: center; gap: 7px; padding: 8px 7px;
+  border-radius: 8px; cursor: pointer; font-size: 12px;
+  border: 1px solid rgba(42, 42, 69, 0.9);
+  background: rgba(22, 22, 37, 0.64);
 }
-.template-item:hover { background: var(--bg-hover); }
-.template-item.active { background: rgba(79, 195, 247, 0.1); outline: 1px solid rgba(79, 195, 247, 0.3); }
-.tpl-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tpl-regions { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
-.tpl-delete {
-  background: none; border: none; color: var(--text-muted); cursor: pointer;
-  font-size: 14px; padding: 0 3px; border-radius: 3px; flex-shrink: 0;
+.template-item:hover { background: rgba(40, 40, 69, 0.75); border-color: rgba(79, 195, 247, 0.22); }
+.template-item.active {
+  background: linear-gradient(90deg, rgba(79, 195, 247, 0.14), rgba(79, 195, 247, 0.04));
+  border-color: rgba(79, 195, 247, 0.42);
 }
-.tpl-delete:hover { background: rgba(229, 92, 92, 0.2); color: var(--danger); }
+.tpl-select-col { width: 18px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.tpl-check { width: 13px; height: 13px; flex-shrink: 0; }
+.star-btn,
+.icon-btn {
+  flex-shrink: 0; width: 20px; height: 20px; border: none; border-radius: 5px;
+  background: transparent; color: var(--text-muted); cursor: pointer; line-height: 18px; padding: 0;
+}
+.star-btn { width: 18px; height: 18px; font-size: 12px; }
+.star-btn.active { color: #e5a400; }
+.star-btn:hover,
+.icon-btn:hover { background: var(--bg-primary); color: var(--text-primary); }
+.icon-btn.danger:hover { color: var(--danger); background: rgba(229, 92, 92, 0.16); }
+.tpl-main { flex: 1; min-width: 0; }
+.tpl-title-row { display: flex; min-width: 0; }
+.tpl-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text-primary); }
+.tpl-meta {
+  display: flex; align-items: center; gap: 5px; overflow: hidden; margin-top: 5px;
+  color: var(--text-muted); font-size: 10px; white-space: nowrap;
+}
+.category-badge {
+  max-width: 58px; overflow: hidden; text-overflow: ellipsis;
+  padding: 1px 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); color: var(--text-secondary);
+}
+.summary-text { overflow: hidden; text-overflow: ellipsis; }
 .tpl-rename-input {
-  flex: 1; background: var(--bg-primary); border: 1px solid var(--accent);
+  width: 100%; background: var(--bg-primary); border: 1px solid var(--accent);
   border-radius: 3px; color: var(--text-primary); font-size: 12px; padding: 1px 4px; outline: none;
 }
-.empty { font-size: 11px; color: var(--text-muted); }
-.btn-primary {
-  width: 100%; padding: 8px 12px; background: var(--accent); color: #fff;
-  border: none; border-radius: var(--radius); font-size: 12px; font-weight: 500;
-  cursor: pointer; transition: opacity 0.15s;
+.tpl-actions { display: flex; flex-direction: column; gap: 3px; opacity: 0.45; transition: opacity 0.15s; }
+.template-item:hover .tpl-actions,
+.template-item.active .tpl-actions { opacity: 1; }
+.selected-tools {
+  order: 4;
+  border-color: rgba(79, 195, 247, 0.24);
+  background: rgba(79, 195, 247, 0.07);
 }
-.btn-primary:hover { opacity: 0.9; }
-.btn-primary:disabled { opacity: 0.5; cursor: default; }
+.segmented {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px;
+  background: rgba(15, 15, 26, 0.72); border: 1px solid var(--border); border-radius: 7px; padding: 3px;
+}
+.segmented label {
+  display: flex; align-items: center; justify-content: center; min-height: 26px;
+  border-radius: 5px; color: var(--text-muted); font-size: 11px; cursor: pointer;
+}
+.segmented label:has(input:checked) { background: rgba(79, 195, 247, 0.18); color: var(--text-primary); }
+.segmented label.disabled { opacity: 0.42; cursor: default; }
+.segmented input { display: none; }
+.apply-btn { height: 32px; }
+.empty { font-size: 11px; color: var(--text-muted); }
 </style>
