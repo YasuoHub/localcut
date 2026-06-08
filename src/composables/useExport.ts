@@ -2,7 +2,7 @@ import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
 import type { CropRegion, TextAnnotation, ImageFormat, ImageLayer, ExportNamingOptions, BatchOutputFitMode } from '../types'
 import { drawShapePath } from './shapeUtils'
-import { buildFilename, sanitizeFilename, ensureUniqueFilename, makeFilenameContext } from './useFilenamePattern'
+import { makeExportFilename, makeFilenameContext } from './useFilenamePattern'
 import { fitCanvasToSize } from './useExportFit'
 
 import { unsharpMask } from '../utils/imageSharpen'
@@ -307,13 +307,17 @@ export function useExport() {
       let filename: string
       if (namingOptions) {
         const ctx = makeFilenameContext(
-          namingOptions.imageName, region.name, i, Math.round(outW), Math.round(outH), ext,
+          namingOptions.imageName,
+          region.name,
+          namingOptions.regionIndexById?.[region.id] ?? i + 1,
+          Math.round(outW),
+          Math.round(outH),
+          ext,
         )
-        const raw = buildFilename(namingOptions.pattern, ctx)
-        filename = ensureUniqueFilename(sanitizeFilename(raw) + '.' + ext, usedNames)
-        usedNames.add(filename)
+        filename = makeExportFilename(namingOptions.pattern, ctx, ext, usedNames)
       } else {
-        filename = `${region.name}.${ext}`
+        const ctx = makeFilenameContext('', region.name, i + 1, Math.round(outW), Math.round(outH), ext)
+        filename = makeExportFilename('{regionName}', ctx, ext, usedNames)
       }
       zip.file(filename, blob)
     }
@@ -332,12 +336,18 @@ export function useExport() {
     textAnnotations?: TextAnnotation[],
     upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
     sharpenAmount?: number,
+    namingOptions?: ExportNamingOptions & { index?: number },
   ) {
     const canvas = await renderRegionToCanvas(layers, region, outputWidth, outputHeight, dpr, showOriginal, textAnnotations, undefined, undefined, upscaleFn, sharpenAmount)
     let blob = await canvasToBlob(canvas, format, quality)
     if (format === 'png') blob = await injectPngDpi(blob, 72)
     const ext = format === 'jpeg' ? 'jpg' : format
-    saveAs(blob, `${region.name}.${ext}`)
+    const index = namingOptions?.index ?? namingOptions?.regionIndexById?.[region.id] ?? 1
+    const outW = outputWidth ?? region.width
+    const outH = outputHeight ?? region.height
+    const ctx = makeFilenameContext(namingOptions?.imageName ?? '', region.name, index, Math.round(outW), Math.round(outH), ext)
+    const filename = makeExportFilename(namingOptions?.pattern ?? '{regionName}', ctx, ext)
+    saveAs(blob, filename)
   }
 
   function downloadZip(blob: Blob, filename = 'output.zip') { saveAs(blob, filename) }

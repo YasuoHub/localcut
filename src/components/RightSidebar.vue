@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import type { CropRegion, TextAnnotation, ImageFormat } from '../types'
+import type { CropRegion, TextAnnotation, ImageFormat, ExportInspectionResult } from '../types'
 import { useExport } from '../composables/useExport'
+import { inspectExport } from '../composables/useExportInspection'
 import { useEditorStore } from '../stores/editor'
 import { useExportStore } from '../stores/export'
 import { useHistoryStore } from '../stores/history'
@@ -11,10 +12,12 @@ import {
   rotateRegionLeft90, rotateRegionRight90, rotateRegion,
 } from '../composables/useRegionTransform'
 import ExportNamingPanel from './right/ExportNamingPanel.vue'
+import ExportInspectionPanel from './right/ExportInspectionPanel.vue'
 import ExportSizePanel from './right/ExportSizePanel.vue'
 import BatchCutPanel from './right/BatchCutPanel.vue'
 import TemplatePanel from './right/TemplatePanel.vue'
 import PreviewModal from './PreviewModal.vue'
+import ExportInspectionModal from './ExportInspectionModal.vue'
 import ImageZoomModal from './ImageZoomModal.vue'
 
 const editor = useEditorStore()
@@ -231,11 +234,49 @@ async function createUpscaleFn(): Promise<((canvas: HTMLCanvasElement) => Promis
 async function handleExportSingle() {
   const region = editor.selectedRegion
   if (!editor.imageLoaded || !region) return
+  const singleResult = inspectExport({
+    allRegions: editor.regions,
+    targetRegions: [region],
+    selectedCount: 1,
+    layers: editor.layers,
+    activeLayer: editor.activeLayer,
+    format: exp.exportFormat,
+    filenamePattern: exp.singleUseFilenamePattern ? exp.filenamePattern : '{regionName}',
+    imageName: exportImageName.value,
+    regionIndexById: regionIndexById.value,
+    settings: {
+      ...exp.inspectionSettings,
+      checkedCount: false,
+      filenameDuplicate: false,
+      unknownVariable: exp.singleUseFilenamePattern && exp.inspectionSettings.unknownVariable,
+    },
+    useCustomSize: Boolean(exp.exportOutputWidth || exp.exportOutputHeight),
+    outputWidth: exp.exportOutputWidth,
+    outputHeight: exp.exportOutputHeight,
+    dpr: exp.exportDpr,
+    upscaleEnabled: exp.upscaleEnabled,
+  })
+  if (singleResult.hasBlockingIssues) {
+    inspectionExportWarning.value = '导出体检发现阻断问题，请先查看检测结果。'
+    activeInspectionResult.value = singleResult
+    showInspectionModal.value = true
+    return
+  }
+  activeInspectionResult.value = null
+  inspectionExportWarning.value = ''
   isExporting.value = true
   exportingSingle.value = true
   exportStatusText.value = '正在导出...'
   try {
     const upscaleFn = await createUpscaleFn()
+    const singleRegionIndex = editor.regions.findIndex(r => r.id === region.id) + 1
+    const namingOptions = exp.singleUseFilenamePattern
+      ? {
+          pattern: exp.filenamePattern,
+          imageName: exportImageName.value,
+          index: singleRegionIndex > 0 ? singleRegionIndex : 1,
+        }
+      : undefined
     await exportSingleRegion(
       editor.layers, region,
       exp.exportFormat, exp.exportQuality,
@@ -244,6 +285,7 @@ async function handleExportSingle() {
       editor.textAnnotations,
       upscaleFn,
       exp.sharpenAmount,
+      namingOptions,
     )
   } catch (err) { console.error('Export failed:', err) }
   finally {
@@ -336,6 +378,41 @@ function checkedRegions(): CropRegion[] {
 }
 
 const exporting = ref(false)
+const showInspectionModal = ref(false)
+const inspectionExportWarning = ref('')
+const activeInspectionResult = ref<ExportInspectionResult | null>(null)
+
+const exportImageName = computed(() => editor.activeLayer?.name?.replace(/\.[^.]+$/, '') ?? 'image')
+const regionIndexById = computed(() => Object.fromEntries(editor.regions.map((r, i) => [r.id, i + 1])))
+const inspectionTargetRegions = computed(() => checkedRegions())
+const inspectionResult = computed(() => {
+  const bw = exp.batchUseCustomSize ? exp.batchOutputWidth : null
+  const bh = exp.batchUseCustomSize ? exp.batchOutputHeight : null
+  return inspectExport({
+    allRegions: editor.regions,
+    targetRegions: inspectionTargetRegions.value,
+    selectedCount: editor.selectedRegionIds.size,
+    layers: editor.layers,
+    activeLayer: editor.activeLayer,
+    format: exp.exportFormat,
+    filenamePattern: exp.filenamePattern,
+    imageName: exportImageName.value,
+    regionIndexById: regionIndexById.value,
+    settings: exp.inspectionSettings,
+    useCustomSize: exp.batchUseCustomSize,
+    outputWidth: bw,
+    outputHeight: bh,
+    fitMode: exp.batchUseCustomSize ? exp.batchFitMode : undefined,
+    dpr: exp.exportDpr,
+    upscaleEnabled: exp.upscaleEnabled,
+  })
+})
+const modalInspectionResult = computed(() => activeInspectionResult.value ?? inspectionResult.value)
+
+function openInspectionResult() {
+  activeInspectionResult.value = null
+  showInspectionModal.value = true
+}
 
 // layer rename state
 const renamingId = ref<string | null>(null)
@@ -366,14 +443,22 @@ async function handleBatchExport() {
   if (!editor.imageLoaded || editor.regions.length === 0) return
   const toExport = checkedRegions()
   if (toExport.length === 0) return
+  if (inspectionResult.value.hasBlockingIssues) {
+    inspectionExportWarning.value = '导出体检发现阻断问题，请先查看检测结果。'
+    activeInspectionResult.value = null
+    showInspectionModal.value = true
+    return
+  }
+  activeInspectionResult.value = null
+  inspectionExportWarning.value = ''
   isExporting.value = true
   exporting.value = true
   exportStatusText.value = toExport.length > 1 ? `正在导出 ${toExport.length} 项...` : '正在导出...'
   try {
-    const imageName = editor.activeLayer?.name?.replace(/\.[^.]+$/, '') ?? 'image'
     const namingOptions = {
       pattern: exp.filenamePattern,
-      imageName,
+      imageName: exportImageName.value,
+      regionIndexById: regionIndexById.value,
     }
     const bw = exp.batchUseCustomSize ? exp.batchOutputWidth : null
     const bh = exp.batchUseCustomSize ? exp.batchOutputHeight : null
@@ -572,6 +657,13 @@ async function handleBatchExport() {
     <!-- File naming -->
     <ExportNamingPanel />
 
+    <!-- Export inspection -->
+    <ExportInspectionPanel
+      :result="inspectionResult"
+      :export-warning="inspectionExportWarning"
+      @open="openInspectionResult"
+    />
+
     </div>
 
     <!-- Regions list + Batch export -->
@@ -604,6 +696,7 @@ async function handleBatchExport() {
     </div>
   </aside>
   <PreviewModal ref="previewModalRef" />
+  <ExportInspectionModal v-model:show="showInspectionModal" :result="modalInspectionResult" />
   <ImageZoomModal :region="previewZoomRegion" v-model:show="previewZoomShow" />
 
   <!-- Export loading overlay -->

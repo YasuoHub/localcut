@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useExportStore } from '../../stores/export'
 import { useEditorStore } from '../../stores/editor'
-import { previewFilenames, validateFilenamePattern, buildFilename, sanitizeFilename, makeFilenameContext } from '../../composables/useFilenamePattern'
+import { previewFilenames, validateFilenamePattern, makeFilenameContext } from '../../composables/useFilenamePattern'
 
 const exp = useExportStore()
 const editor = useEditorStore()
@@ -43,20 +43,14 @@ const imageName = computed(() => {
   return dot > -1 ? al.name.slice(0, dot) : al.name
 })
 
-const sampleContexts = computed(() => {
-  return editor.regions.slice(0, 3).map((r, i) =>
-    makeFilenameContext(imageName.value, r.name, i, Math.round(r.width), Math.round(r.height), 'png'),
-  )
-})
-
 const previews = computed(() => {
   const ctxs = editor.regions.map((r, i) =>
-    makeFilenameContext(imageName.value, r.name, i, Math.round(r.width), Math.round(r.height), 'png'),
+    makeFilenameContext(imageName.value, r.name, i + 1, Math.round(r.width), Math.round(r.height), 'png'),
   )
   return previewFilenames(pattern.value, ctxs.length > 0 ? ctxs : [
-    makeFilenameContext('demo', 'main', 0, 800, 800, 'png'),
-    makeFilenameContext('demo', 'detail', 1, 800, 800, 'png'),
-    makeFilenameContext('demo', 'badge', 2, 800, 800, 'png'),
+    makeFilenameContext('demo', 'main', 1, 800, 800, 'png'),
+    makeFilenameContext('demo', 'detail', 2, 800, 800, 'png'),
+    makeFilenameContext('demo', 'badge', 3, 800, 800, 'png'),
   ], 'png')
 })
 </script>
@@ -74,6 +68,12 @@ const previews = computed(() => {
         class="text-input"
         placeholder="{imageName}_{regionName}_{index:3}"
       />
+    </div>
+    <div class="field">
+      <label class="checkbox-label">
+        <input type="checkbox" v-model="exp.singleUseFilenamePattern" />
+        单张生效
+      </label>
     </div>
     <div v-if="validation.unknownKeys.length" class="field warn">
       未知变量: {{ validation.unknownKeys.join(', ') }}
@@ -99,6 +99,8 @@ const previews = computed(() => {
 .section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 12px; }
 .field { margin-bottom: 10px; }
 .field label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
+.checkbox-label { display: flex !important; align-items: center; gap: 6px; cursor: pointer; }
+.checkbox-label input { accent-color: var(--accent); }
 .text-input {
   width: 100%; background: var(--bg-primary); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 6px 8px; color: var(--text-primary);

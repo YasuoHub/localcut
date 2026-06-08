@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { ImageFormat, BatchOutputFitMode } from '../types'
+import type { ImageFormat, BatchOutputFitMode, ExportInspectionSettings, CropTemplateExportSettings } from '../types'
 
 export const useExportStore = defineStore('export', () => {
   const exportFormat = ref<ImageFormat>('png')
@@ -27,12 +27,63 @@ export const useExportStore = defineStore('export', () => {
 
   // naming
   const filenamePattern = ref('{imageName}_{regionName}_{index:3}')
+  const singleUseFilenamePattern = ref(true)
   const selectedPlatformPresetId = ref<string | null>(null)
+
+  // export inspection
+  const inspectionSettings = ref<ExportInspectionSettings>({
+    regionCount: true,
+    checkedCount: true,
+    outputSize: true,
+    filenameDuplicate: true,
+    unknownVariable: true,
+    activeLayerBounds: true,
+    visibleLayerCoverage: true,
+    sourcePixels: true,
+  })
 
   function applyPlatformPreset(width: number, height: number) {
     batchUseCustomSize.value = true
     batchOutputWidth.value = width
     batchOutputHeight.value = height
+  }
+
+  function createTemplateExportSettings(options: {
+    size: boolean
+    fit: boolean
+    fill: boolean
+    naming: boolean
+    formatQuality: boolean
+  }): CropTemplateExportSettings {
+    const settings: CropTemplateExportSettings = {}
+    if (options.size) {
+      settings.batchUseCustomSize = batchUseCustomSize.value
+      settings.batchOutputWidth = batchOutputWidth.value
+      settings.batchOutputHeight = batchOutputHeight.value
+    }
+    if (options.fit) settings.batchFitMode = batchFitMode.value
+    if (options.fill) settings.batchFillColor = batchFillColor.value
+    if (options.naming) {
+      settings.filenamePattern = filenamePattern.value
+      settings.singleUseFilenamePattern = singleUseFilenamePattern.value
+    }
+    if (options.formatQuality) {
+      settings.exportFormat = exportFormat.value
+      settings.exportQuality = exportQuality.value
+    }
+    return settings
+  }
+
+  function applyTemplateExportSettings(settings: CropTemplateExportSettings) {
+    if (typeof settings.batchUseCustomSize === 'boolean') batchUseCustomSize.value = settings.batchUseCustomSize
+    if (settings.batchOutputWidth !== undefined) batchOutputWidth.value = settings.batchOutputWidth
+    if (settings.batchOutputHeight !== undefined) batchOutputHeight.value = settings.batchOutputHeight
+    if (settings.batchFitMode) batchFitMode.value = settings.batchFitMode
+    if (settings.batchFillColor) batchFillColor.value = settings.batchFillColor
+    if (settings.filenamePattern) filenamePattern.value = settings.filenamePattern
+    if (typeof settings.singleUseFilenamePattern === 'boolean') singleUseFilenamePattern.value = settings.singleUseFilenamePattern
+    if (settings.exportFormat) exportFormat.value = settings.exportFormat
+    if (typeof settings.exportQuality === 'number') exportQuality.value = settings.exportQuality
   }
 
   return {
@@ -44,7 +95,10 @@ export const useExportStore = defineStore('export', () => {
     batchFitMode, batchFillColor,
     upscaleEnabled, upscaleScale,
     sharpenAmount,
-    filenamePattern, selectedPlatformPresetId,
+    filenamePattern, singleUseFilenamePattern, selectedPlatformPresetId,
+    inspectionSettings,
     applyPlatformPreset,
+    createTemplateExportSettings,
+    applyTemplateExportSettings,
   }
 })

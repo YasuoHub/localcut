@@ -8,6 +8,10 @@ export type ImageFormat = 'png' | 'jpeg' | 'webp'
 
 export type BatchOutputFitMode = 'original' | 'cover' | 'contain' | 'stretch'
 
+export type CropTemplateCategory = 'general' | 'ecommerce-main' | 'detail-long' | 'store-decoration' | 'custom'
+
+export type TemplateConflictMode = 'overwrite' | 'rename' | 'skip'
+
 export interface CropRegion {
   id: string
   name: string
@@ -112,9 +116,15 @@ export interface FilenameContext {
 export interface CropTemplate {
   id: string
   name: string
+  version: number
+  category: CropTemplateCategory
+  favorite: boolean
   createdAt: number
+  updatedAt: number
+  lastUsedAt?: number
   baseRect: { x: number; y: number; width: number; height: number }
   regions: CropTemplateRegion[]
+  exportSettings?: CropTemplateExportSettings
 }
 
 export interface CropTemplateRegion {
@@ -125,11 +135,93 @@ export interface CropTemplateRegion {
   widthRatio: number
   heightRatio: number
   pointsRatio?: { x: number; y: number }[]
+  borderRadiusRatio?: number
+}
+
+export interface CropTemplateExportSettings {
+  batchUseCustomSize?: boolean
+  batchOutputWidth?: number | null
+  batchOutputHeight?: number | null
+  batchFitMode?: BatchOutputFitMode
+  batchFillColor?: string
+  filenamePattern?: string
+  singleUseFilenamePattern?: boolean
+  exportFormat?: ImageFormat
+  exportQuality?: number
+}
+
+export interface CropTemplateSaveOptions {
+  category: CropTemplateCategory
+  exportSettings?: CropTemplateExportSettings
+}
+
+export interface CropTemplateBundle {
+  schema: 'localcut-template' | 'localcut-templates'
+  version: number
+  exportedAt: number
+  templates: CropTemplate[]
+}
+
+export interface CropTemplateImportIssue {
+  level: 'warning' | 'error'
+  message: string
+}
+
+export interface CropTemplateImportResult {
+  imported: number
+  skipped: number
+  overwritten: number
+  renamed: number
+  issues: CropTemplateImportIssue[]
 }
 
 export interface ExportNamingOptions {
   pattern: string
   imageName: string
+  regionIndexById?: Record<string, number>
+}
+
+export type ExportInspectionCheckKey =
+  | 'regionCount'
+  | 'checkedCount'
+  | 'outputSize'
+  | 'filenameDuplicate'
+  | 'unknownVariable'
+  | 'activeLayerBounds'
+  | 'visibleLayerCoverage'
+  | 'sourcePixels'
+
+export interface ExportInspectionSettings {
+  regionCount: boolean
+  checkedCount: boolean
+  outputSize: boolean
+  filenameDuplicate: boolean
+  unknownVariable: boolean
+  activeLayerBounds: boolean
+  visibleLayerCoverage: boolean
+  sourcePixels: boolean
+}
+
+export interface ExportInspectionIssue {
+  id: string
+  checkKey: ExportInspectionCheckKey
+  severity: 'error' | 'warning'
+  title: string
+  detail: string
+  regionId?: string
+}
+
+export interface ExportInspectionRegionSummary {
+  region: CropRegion
+  issues: ExportInspectionIssue[]
+}
+
+export interface ExportInspectionResult {
+  issues: ExportInspectionIssue[]
+  globalIssues: ExportInspectionIssue[]
+  regionSummaries: ExportInspectionRegionSummary[]
+  failedRegionCount: number
+  hasBlockingIssues: boolean
 }
 
 export interface PlatformPreset {

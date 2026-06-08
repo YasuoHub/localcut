@@ -50,12 +50,20 @@ export function previewFilenames(
 ): string[] {
   const used = new Set<string>()
   return contexts.map((ctx) => {
-    const raw = buildFilename(pattern, ctx)
-    const sanitized = sanitizeFilename(raw)
-    const name = ensureUniqueFilename(`${sanitized}.${ext}`, used)
-    used.add(name)
-    return name
+    return makeExportFilename(pattern, ctx, ext, used)
   })
+}
+
+export function makeExportFilename(
+  pattern: string,
+  context: FilenameContext,
+  ext: string,
+  used: Set<string> = new Set<string>(),
+): string {
+  const raw = buildFilename(pattern, context)
+  const name = ensureUniqueFilename(`${sanitizeFilename(raw)}.${ext}`, used)
+  used.add(name)
+  return name
 }
 
 export function makeFilenameContext(
