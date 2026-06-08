@@ -243,7 +243,7 @@ function buildMenu() {
             dialog.showMessageBox({
               title: '关于 LocalCut Pro',
               message: 'LocalCut Pro v1.0.0',
-              detail: '本地图片素材切割工作台\n支持 AI 智能抠图与超分辨率',
+              detail: '本地图片素材切割工作台\n支持 AI 智能抠图与超分辨率\n 联系方式: leox520@163.com ',
             })
           },
         },
