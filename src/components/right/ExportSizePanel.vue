@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { useExportStore } from '../../stores/export'
 import { PLATFORM_PRESETS } from '../../constants/platformPresets'
 import type { BatchOutputFitMode } from '../../types'
@@ -11,6 +12,33 @@ const fitOptions: { value: BatchOutputFitMode; label: string }[] = [
   { value: 'stretch', label: '拉伸' },
   { value: 'original', label: '原始' },
 ]
+
+const fillColorPresets = ['#ffffff', '#f5f5f5', '#000000', '#f7f1e8', '#e8eef6', '#f3ead7']
+const fillColorText = ref(exp.batchFillColor)
+
+watch(() => exp.batchFillColor, (color) => {
+  if (color !== fillColorText.value) fillColorText.value = color
+})
+
+function normalizeHexColor(value: string) {
+  const raw = value.trim().replace(/^#/, '')
+  if (/^[\da-f]{3}$/i.test(raw)) {
+    return `#${raw.split('').map(ch => ch + ch).join('')}`.toLowerCase()
+  }
+  if (/^[\da-f]{6}$/i.test(raw)) return `#${raw}`.toLowerCase()
+  return exp.batchFillColor
+}
+
+function commitFillColorText() {
+  const normalized = normalizeHexColor(fillColorText.value)
+  fillColorText.value = normalized
+  exp.batchFillColor = normalized
+}
+
+function setFillColor(color: string) {
+  exp.batchFillColor = color
+  fillColorText.value = color
+}
 
 const groupedPresets = (() => {
   const map = new Map<string, typeof PLATFORM_PRESETS>()
@@ -27,11 +55,10 @@ const groupedPresets = (() => {
   <section class="section">
     <div class="section-title">批量输出尺寸</div>
 
-    <!-- platform presets -->
     <div class="field">
       <label>尺寸预设</label>
       <select class="select-input" v-model="exp.selectedPlatformPresetId">
-        <option :value="null">— 自定义 —</option>
+        <option :value="null">- 自定义 -</option>
         <optgroup v-for="[group, items] in groupedPresets" :key="group" :label="group">
           <option v-for="p in items" :key="p.id" :value="p.id">{{ p.name }}</option>
         </optgroup>
@@ -62,8 +89,32 @@ const groupedPresets = (() => {
         </select>
       </div>
       <div class="field" v-if="exp.batchFitMode === 'contain'">
-        <label>背景色</label>
-        <input type="color" v-model="exp.batchFillColor" class="color-input" />
+        <label>背景填充色</label>
+        <div class="fill-color-row">
+          <input type="color" v-model="exp.batchFillColor" class="color-input" title="选择背景填充色" />
+          <input
+            type="text"
+            v-model="fillColorText"
+            class="text-input fill-color-text"
+            maxlength="7"
+            placeholder="#ffffff"
+            @blur="commitFillColorText"
+            @keyup.enter="commitFillColorText"
+          />
+        </div>
+        <div class="fill-color-swatches">
+          <button
+            v-for="color in fillColorPresets"
+            :key="color"
+            type="button"
+            class="fill-swatch"
+            :class="{ active: exp.batchFillColor.toLowerCase() === color }"
+            :style="{ backgroundColor: color }"
+            :title="color"
+            @click="setFillColor(color)"
+          />
+        </div>
+        <div class="field-hint">完整包含时用于补齐输出画布空白，会随模板的“背景”配置保存。</div>
       </div>
     </template>
   </section>
@@ -90,5 +141,17 @@ const groupedPresets = (() => {
   font-size: 12px; outline: none;
 }
 .select-input:focus { border-color: var(--accent); }
-.color-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; padding: 2px; }
+.fill-color-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 7px; align-items: center; }
+.color-input {
+  width: 44px; height: 32px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; padding: 2px;
+}
+.fill-color-text { height: 32px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: lowercase; }
+.fill-color-swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; margin-top: 7px; }
+.fill-swatch {
+  height: 22px; border: 1px solid var(--border); border-radius: 5px;
+  cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.fill-swatch.active { border-color: var(--accent); outline: 1px solid rgba(40, 199, 111, 0.32); }
+.field-hint { margin-top: 6px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 </style>

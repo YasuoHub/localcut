@@ -73,6 +73,42 @@ export interface ImageLayer {
   visible: boolean
 }
 
+export type ColorProcessScope = 'layer' | 'selected-region' | 'manual'
+
+export type ColorProcessAction = 'transparent' | 'replace'
+
+export interface ColorProcessRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface ColorProcessPreview {
+  layerId: string
+  width: number
+  height: number
+  mask: Uint8ClampedArray
+  count: number
+}
+
+export interface ColorProcessSettings {
+  sourceColor: string
+  targetColor: string
+  tolerance: number
+  feather: number
+  scope: ColorProcessScope
+  action: ColorProcessAction
+  contiguous: boolean
+  removeFringe: boolean
+  despeckle: boolean
+  manualRect: ColorProcessRect | null
+  seedPoint: { x: number; y: number } | null
+  pickingColor: boolean
+  selectingRect: boolean
+  preview: ColorProcessPreview | null
+}
+
 export interface GridOptions {
   rows: number
   cols: number

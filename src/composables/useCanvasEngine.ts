@@ -2,6 +2,8 @@ import { ref, reactive, watch, type Ref } from 'vue'
 import type { CropRegion, ShapeType, TextAnnotation, DragType, CanvasViewState, ImageLayer } from '../types'
 import { drawShapePath, addShapeToPath, nextRegionName } from './shapeUtils'
 import { magicWandSelect } from './magicWandUtils'
+import { useEditorStore } from '../stores/editor'
+import { rgbToHex } from '../utils/colorProcessing'
 
 export { drawShapePath }
 
@@ -61,6 +63,7 @@ export function useCanvasEngine(
   removeVGuide?: (x: number) => void,
   snapshot?: () => void,
 ) {
+  const editor = useEditorStore()
   const view = reactive<CanvasViewState>({
     image: null,
     scale: 1,
@@ -132,6 +135,11 @@ export function useCanvasEngine(
   const layerMarqueeImgEnd = ref<{ ix: number; iy: number }>({ ix: 0, iy: 0 })
   const layerDragStartPositions = ref<Map<string, { x: number; y: number }> | null>(null)
 
+  // color processing range selection state
+  const isColorRectSelecting = ref(false)
+  const colorRectStart = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+  const colorRectEnd = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+
   // clipboard
   interface ClipboardRegion {
     shape: ShapeType
@@ -150,6 +158,8 @@ export function useCanvasEngine(
   let renderRaf = 0
   let dirty = true
   let cleanupKeyboardListeners: (() => void) | null = null
+  let colorPreviewCanvas: HTMLCanvasElement | null = null
+  let colorPreviewSource: unknown = null
 
   function markDirty() {
     dirty = true
@@ -202,6 +212,82 @@ export function useCanvasEngine(
   function getSelectedText(): TextAnnotation | null {
     if (!selectedTextId.value) return null
     return textAnnotations.find(t => t.id === selectedTextId.value) ?? null
+  }
+
+  function screenToLayerPoint(e: MouseEvent, layer: ImageLayer) {
+    const img = screenToImage(e.clientX, e.clientY)
+    return {
+      x: (img.ix - layer.x) / layer.scaleX,
+      y: (img.iy - layer.y) / layer.scaleY,
+    }
+  }
+
+  function clampLayerPoint(point: { x: number; y: number }, layer: ImageLayer) {
+    const width = layer.workingCanvas?.width ?? layer.image.naturalWidth
+    const height = layer.workingCanvas?.height ?? layer.image.naturalHeight
+    return {
+      x: clamp(point.x, 0, width),
+      y: clamp(point.y, 0, height),
+    }
+  }
+
+  function sampleLayerColor(e: MouseEvent) {
+    const layer = getActiveLayer()
+    const wc = layer?.workingCanvas
+    if (!layer || !wc) return false
+    const point = clampLayerPoint(screenToLayerPoint(e, layer), layer)
+    const x = Math.floor(point.x)
+    const y = Math.floor(point.y)
+    if (x < 0 || y < 0 || x >= wc.width || y >= wc.height) return false
+    const data = wc.getContext('2d')!.getImageData(x, y, 1, 1).data
+    editor.colorProcessSourceColor = rgbToHex(data[0], data[1], data[2])
+    editor.colorProcessSeedPoint = { x, y }
+    editor.colorProcessPickingColor = false
+    editor.setColorProcessPreview(null)
+    markDirty()
+    return true
+  }
+
+  function beginColorRectSelection(e: MouseEvent) {
+    const layer = getActiveLayer()
+    if (!layer?.workingCanvas) return false
+    const point = clampLayerPoint(screenToLayerPoint(e, layer), layer)
+    colorRectStart.value = point
+    colorRectEnd.value = point
+    isColorRectSelecting.value = true
+    editor.colorProcessSelectingRect = true
+    markDirty()
+    return true
+  }
+
+  function currentColorRect() {
+    const x = Math.min(colorRectStart.value.x, colorRectEnd.value.x)
+    const y = Math.min(colorRectStart.value.y, colorRectEnd.value.y)
+    const width = Math.abs(colorRectEnd.value.x - colorRectStart.value.x)
+    const height = Math.abs(colorRectEnd.value.y - colorRectStart.value.y)
+    return { x, y, width, height }
+  }
+
+  function getPreviewOverlayCanvas(preview: typeof editor.colorProcessPreview) {
+    if (!preview) return null
+    if (colorPreviewCanvas && colorPreviewSource === preview) return colorPreviewCanvas
+    const overlay = document.createElement('canvas')
+    overlay.width = preview.width
+    overlay.height = preview.height
+    const data = new Uint8ClampedArray(preview.width * preview.height * 4)
+    for (let p = 0; p < preview.mask.length; p++) {
+      const alpha = preview.mask[p]
+      if (!alpha) continue
+      const i = p * 4
+      data[i] = 40
+      data[i + 1] = 199
+      data[i + 2] = 111
+      data[i + 3] = Math.min(180, Math.max(35, alpha))
+    }
+    overlay.getContext('2d')!.putImageData(new ImageData(data, preview.width, preview.height), 0, 0)
+    colorPreviewCanvas = overlay
+    colorPreviewSource = preview
+    return overlay
   }
 
   function cleanupEmptyText() {
@@ -607,6 +693,16 @@ export function useCanvasEngine(
 
     if (e.button !== 0) return
 
+    if (editor.colorProcessPickingColor) {
+      sampleLayerColor(e)
+      return
+    }
+
+    if (editor.colorProcessSelectingRect) {
+      beginColorRectSelection(e)
+      return
+    }
+
     // Shift+click → pending marquee (activates on drag >3px)
     if (e.shiftKey) {
       // Ctrl+Shift → layer marquee; Shift only → region marquee
@@ -946,6 +1042,15 @@ export function useCanvasEngine(
       return
     }
 
+    if (isColorRectSelecting.value) {
+      const layer = getActiveLayer()
+      if (layer?.workingCanvas) {
+        colorRectEnd.value = clampLayerPoint(screenToLayerPoint(e, layer), layer)
+        markDirty()
+      }
+      return
+    }
+
     // marquee selection
     if (marqueeStart.value) {
       if (!isMarquee.value) {
@@ -1184,6 +1289,17 @@ export function useCanvasEngine(
   function handleMouseUp(_e: MouseEvent) {
     if (isPanning.value) { isPanning.value = false; return }
 
+    if (isColorRectSelecting.value) {
+      isColorRectSelecting.value = false
+      editor.colorProcessSelectingRect = false
+      const rect = currentColorRect()
+      if (rect.width >= 2 && rect.height >= 2) {
+        editor.setColorProcessManualRect(rect)
+      }
+      markDirty()
+      return
+    }
+
     // marquee finalize
     if (isMarquee.value) {
       isMarquee.value = false
@@ -1415,6 +1531,15 @@ export function useCanvasEngine(
       return
     }
 
+    if (editor.colorProcessPickingColor) {
+      canvas.style.cursor = 'copy'
+      return
+    }
+    if (editor.colorProcessSelectingRect || isColorRectSelecting.value) {
+      canvas.style.cursor = 'crosshair'
+      return
+    }
+
     if (activeTool.value === 'brush' || activeTool.value === 'eraser') {
       const size = activeTool.value === 'brush' ? brushSettings.value.size : eraserSettings.value.size
       const cs = size * view.scale
@@ -1497,7 +1622,7 @@ export function useCanvasEngine(
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     if (!hasImage) {
-      ctx.fillStyle = '#1a1a2e'
+      ctx.fillStyle = '#151515'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
       ctx.fillStyle = '#555'
       ctx.font = '14px sans-serif'
@@ -1507,9 +1632,9 @@ export function useCanvasEngine(
 
     // checkerboard
     const cs = 10
-    ctx.fillStyle = '#2a2a3a'
+    ctx.fillStyle = '#171713'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.fillStyle = '#353545'
+    ctx.fillStyle = '#20201c'
     for (let cy = 0; cy < canvas.height; cy += cs * 2) {
       for (let cx = 0; cx < canvas.width; cx += cs * 2) {
         ctx.fillRect(cx + ((Math.floor(cy / cs) % 2) * cs), cy, cs, cs)
@@ -1584,6 +1709,44 @@ export function useCanvasEngine(
         ctx.strokeRect(cx - hs, cy - hs, hs * 2, hs * 2)
       }
       ctx.restore()
+    }
+
+    if (al && al.visible && layers.value.length > 0) {
+      const natW = al.image.naturalWidth * al.scaleX
+      const natH = al.image.naturalHeight * al.scaleY
+      const ldx = (al.x - view.offsetX) * view.scale
+      const ldy = (al.y - view.offsetY) * view.scale
+      const ldw = natW * view.scale
+      const ldh = natH * view.scale
+      const preview = editor.colorProcessPreview
+
+      if (preview && preview.layerId === al.id) {
+        const overlay = getPreviewOverlayCanvas(preview)
+        if (overlay) {
+          ctx.save()
+          ctx.drawImage(overlay, ldx, ldy, ldw, ldh)
+          ctx.restore()
+        }
+      }
+
+      const manualRect = isColorRectSelecting.value
+        ? currentColorRect()
+        : editor.colorProcessManualRect
+      if (manualRect && (editor.colorProcessScope === 'manual' || isColorRectSelecting.value)) {
+        const rx = ldx + manualRect.x * al.scaleX * view.scale
+        const ry = ldy + manualRect.y * al.scaleY * view.scale
+        const rw = manualRect.width * al.scaleX * view.scale
+        const rh = manualRect.height * al.scaleY * view.scale
+        ctx.save()
+        ctx.fillStyle = 'rgba(40, 199, 111, 0.08)'
+        ctx.strokeStyle = '#28c76f'
+        ctx.lineWidth = 1.5
+        ctx.setLineDash([6, 4])
+        ctx.fillRect(rx, ry, rw, rh)
+        ctx.strokeRect(rx, ry, rw, rh)
+        ctx.setLineDash([])
+        ctx.restore()
+      }
     }
 
     // --- guide lines ---
@@ -1903,6 +2066,17 @@ export function useCanvasEngine(
   watch(showOriginal, () => markDirty())
   watch(constrainToImage, () => markDirty())
   watch(magicWandTolerance, () => markDirty())
+  watch(
+    () => [
+      editor.colorProcessPickingColor,
+      editor.colorProcessSelectingRect,
+      editor.colorProcessScope,
+      editor.colorProcessManualRect,
+      editor.colorProcessPreview,
+    ],
+    () => markDirty(),
+    { deep: true },
+  )
   watch(layers, () => markDirty(), { deep: true })
   watch(activeLayerId, () => markDirty())
   watch(canvasVersion, () => markDirty())

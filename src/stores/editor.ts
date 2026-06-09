@@ -1,6 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { CropRegion, TextAnnotation, ToolType, BrushSettings, EraserSettings, ImageLayer } from '../types'
+import type {
+  ColorProcessAction,
+  ColorProcessRect,
+  ColorProcessScope,
+  CropRegion,
+  TextAnnotation,
+  ToolType,
+  BrushSettings,
+  EraserSettings,
+  ImageLayer,
+  ColorProcessPreview,
+} from '../types'
 
 export const useEditorStore = defineStore('editor', () => {
   // ---- layers ----
@@ -163,6 +174,49 @@ export const useEditorStore = defineStore('editor', () => {
   const eraserSettings = ref<EraserSettings>({ size: 30 })
   const magicWandTolerance = ref(20)
 
+  // ---- layer color processing ----
+  const colorProcessSourceColor = ref('#ffffff')
+  const colorProcessTargetColor = ref('#ffffff')
+  const colorProcessTolerance = ref(28)
+  const colorProcessFeather = ref(1)
+  const colorProcessScope = ref<ColorProcessScope>('layer')
+  const colorProcessAction = ref<ColorProcessAction>('transparent')
+  const colorProcessContiguous = ref(false)
+  const colorProcessRemoveFringe = ref(true)
+  const colorProcessDespeckle = ref(true)
+  const colorProcessManualRect = ref<ColorProcessRect | null>(null)
+  const colorProcessSeedPoint = ref<{ x: number; y: number } | null>(null)
+  const colorProcessPickingColor = ref(false)
+  const colorProcessSelectingRect = ref(false)
+  const colorProcessPreview = ref<ColorProcessPreview | null>(null)
+
+  function startColorPick() {
+    colorProcessPickingColor.value = true
+    colorProcessSelectingRect.value = false
+  }
+
+  function startColorRectSelect() {
+    colorProcessSelectingRect.value = true
+    colorProcessPickingColor.value = false
+    colorProcessScope.value = 'manual'
+  }
+
+  function cancelColorProcessCanvasMode() {
+    colorProcessPickingColor.value = false
+    colorProcessSelectingRect.value = false
+  }
+
+  function setColorProcessManualRect(rect: ColorProcessRect | null) {
+    colorProcessManualRect.value = rect
+    colorProcessScope.value = 'manual'
+    colorProcessPreview.value = null
+  }
+
+  function setColorProcessPreview(preview: ColorProcessPreview | null) {
+    colorProcessPreview.value = preview
+    invalidateCanvas()
+  }
+
   // ---- canvas settings ----
   const constrainToImage = ref(false)
   const showOriginal = ref(false)
@@ -225,6 +279,13 @@ export const useEditorStore = defineStore('editor', () => {
     selectText, deleteText,
     activeTool, setTool,
     brushSettings, eraserSettings, magicWandTolerance,
+    colorProcessSourceColor, colorProcessTargetColor, colorProcessTolerance, colorProcessFeather,
+    colorProcessScope, colorProcessAction, colorProcessContiguous,
+    colorProcessRemoveFringe, colorProcessDespeckle,
+    colorProcessManualRect, colorProcessSeedPoint,
+    colorProcessPickingColor, colorProcessSelectingRect, colorProcessPreview,
+    startColorPick, startColorRectSelect, cancelColorProcessCanvasMode,
+    setColorProcessManualRect, setColorProcessPreview,
     constrainToImage, showOriginal, isSingleLayerMode,
     isHeavyProcessing,
     canvasVersion, invalidateCanvas,
