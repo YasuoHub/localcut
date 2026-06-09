@@ -17,6 +17,13 @@ const CP_SIZE = 8
 const CP_HALF = CP_SIZE / 2
 
 interface ControlPoint { type: DragType; sx: number; sy: number }
+interface Bounds { x: number; y: number; width: number; height: number }
+interface BrushCursor {
+  sx: number
+  sy: number
+  radius: number
+  tool: 'brush' | 'eraser'
+}
 
 function getControlPoints(x: number, y: number, w: number, h: number, view: CanvasViewState): ControlPoint[] {
   const cx = (x + w / 2 - view.offsetX) * view.scale
@@ -114,6 +121,7 @@ export function useCanvasEngine(
   // brush/eraser state
   const isBrushing = ref(false)
   const lastBrushPos = ref<{ x: number; y: number } | null>(null)
+  const brushCursor = ref<BrushCursor | null>(null)
 
   // pan state
   const isPanning = ref(false)
@@ -121,6 +129,8 @@ export function useCanvasEngine(
   const panStartOffset = ref<{ ox: number; oy: number }>({ ox: 0, oy: 0 })
   const spaceHeld = ref(false)
   const ctrlOrMetaHeld = ref(false)
+
+  const activeSnapGuide = ref<{ x: number | null; y: number | null }>({ x: null, y: null })
 
   // marquee selection state
   const isMarquee = ref(false)
@@ -158,8 +168,6 @@ export function useCanvasEngine(
   let renderRaf = 0
   let dirty = true
   let cleanupKeyboardListeners: (() => void) | null = null
-  let colorPreviewCanvas: HTMLCanvasElement | null = null
-  let colorPreviewSource: unknown = null
 
   function markDirty() {
     dirty = true
@@ -190,18 +198,218 @@ export function useCanvasEngine(
 
   function fitToCanvas() {
     const canvas = canvasRef.value
-    const img = getActiveImage()
+    const layer = getActiveLayer()
+    const img = layer?.image ?? getActiveImage()
     if (!canvas || !img) return
     const dpr = window.devicePixelRatio || 1
     const cw = canvas.width || (canvas.clientWidth * dpr)
     const ch = canvas.height || (canvas.clientHeight * dpr)
     if (!cw || !ch) return
-    const scaleX = cw / img.naturalWidth
-    const scaleY = ch / img.naturalHeight
-    view.scale = Math.min(scaleX, scaleY) * 0.85
-    view.offsetX = -30
-    view.offsetY = -30
+    const bounds = layer
+      ? getLayerBounds(layer)
+      : { x: 0, y: 0, width: img.naturalWidth, height: img.naturalHeight }
+    if (bounds.width <= 0 || bounds.height <= 0) return
+    const nextScale = clamp(Math.min(cw / bounds.width, ch / bounds.height) * 0.85, 0.02, 50)
+    const centerX = bounds.x + bounds.width / 2
+    const centerY = bounds.y + bounds.height / 2
+    view.image = img
+    view.scale = nextScale
+    view.offsetX = centerX - cw / (2 * nextScale)
+    view.offsetY = centerY - ch / (2 * nextScale)
     markDirty()
+  }
+
+  function getLayerBounds(layer: ImageLayer) {
+    return {
+      x: layer.x,
+      y: layer.y,
+      width: layer.image.naturalWidth * layer.scaleX,
+      height: layer.image.naturalHeight * layer.scaleY,
+    }
+  }
+
+  function getVisibleLayerBounds() {
+    const visible = layers.value.filter(layer => layer.visible)
+    if (visible.length === 0) return null
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const layer of visible) {
+      const bounds = getLayerBounds(layer)
+      minX = Math.min(minX, bounds.x)
+      minY = Math.min(minY, bounds.y)
+      maxX = Math.max(maxX, bounds.x + bounds.width)
+      maxY = Math.max(maxY, bounds.y + bounds.height)
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || maxX <= minX || maxY <= minY) return null
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  }
+
+  function fitBoundsToViewport(bounds: Bounds, scalePadding = 0.86) {
+    const canvas = canvasRef.value
+    if (!canvas || bounds.width <= 0 || bounds.height <= 0) return
+    const cw = canvas.width
+    const ch = canvas.height
+    if (!cw || !ch) return
+    const nextScale = clamp(Math.min(cw / bounds.width, ch / bounds.height) * scalePadding, 0.02, 50)
+    const centerX = bounds.x + bounds.width / 2
+    const centerY = bounds.y + bounds.height / 2
+    view.scale = nextScale
+    view.offsetX = centerX - cw / (2 * nextScale)
+    view.offsetY = centerY - ch / (2 * nextScale)
+    markDirty()
+  }
+
+  function fitAllLayersToViewport() {
+    const bounds = getVisibleLayerBounds()
+    if (!bounds) return
+    fitBoundsToViewport(bounds)
+  }
+
+  function centerActiveLayer() {
+    const canvas = canvasRef.value
+    const layer = getActiveLayer()
+    if (!canvas || !layer) return
+    const bounds = getLayerBounds(layer)
+    view.offsetX = bounds.x + bounds.width / 2 - canvas.width / (2 * view.scale)
+    view.offsetY = bounds.y + bounds.height / 2 - canvas.height / (2 * view.scale)
+    markDirty()
+  }
+
+  function resetZoomTo100() {
+    const canvas = canvasRef.value
+    if (!canvas) return
+    const centerX = view.offsetX + canvas.width / (2 * view.scale)
+    const centerY = view.offsetY + canvas.height / (2 * view.scale)
+    view.scale = 1
+    view.offsetX = centerX - canvas.width / 2
+    view.offsetY = centerY - canvas.height / 2
+    markDirty()
+  }
+
+  function snapEnabled(e: MouseEvent) {
+    return editor.snapToGuides && !e.altKey
+  }
+
+  function clearActiveSnapGuide() {
+    if (activeSnapGuide.value.x !== null || activeSnapGuide.value.y !== null) {
+      activeSnapGuide.value = { x: null, y: null }
+    }
+  }
+
+  function nearestSnapDelta(candidates: number[], guides: number[]) {
+    const threshold = 8 / view.scale
+    let best: { delta: number; guide: number; distance: number } | null = null
+    for (const candidate of candidates) {
+      for (const guide of guides) {
+        const distance = Math.abs(guide - candidate)
+        if (distance <= threshold && (!best || distance < best.distance)) {
+          best = { delta: guide - candidate, guide, distance }
+        }
+      }
+    }
+    return best
+  }
+
+  function snapMoveBounds(bounds: Bounds, e: MouseEvent) {
+    if (!snapEnabled(e)) {
+      clearActiveSnapGuide()
+      return { bounds, dx: 0, dy: 0 }
+    }
+
+    const snapX = nearestSnapDelta(
+      [bounds.x, bounds.x + bounds.width / 2, bounds.x + bounds.width],
+      vGuides.value,
+    )
+    const snapY = nearestSnapDelta(
+      [bounds.y, bounds.y + bounds.height / 2, bounds.y + bounds.height],
+      hGuides.value,
+    )
+    activeSnapGuide.value = { x: snapX?.guide ?? null, y: snapY?.guide ?? null }
+    const dx = snapX?.delta ?? 0
+    const dy = snapY?.delta ?? 0
+    return {
+      bounds: { ...bounds, x: bounds.x + dx, y: bounds.y + dy },
+      dx,
+      dy,
+    }
+  }
+
+  function snapResizeBounds(bounds: Bounds, handle: string, e: MouseEvent, minSize = 10) {
+    if (!snapEnabled(e)) {
+      clearActiveSnapGuide()
+      return bounds
+    }
+    const direction = handle.replace('resize-', '')
+
+    const snapX = direction.includes('w')
+      ? nearestSnapDelta([bounds.x], vGuides.value)
+      : direction.includes('e')
+        ? nearestSnapDelta([bounds.x + bounds.width], vGuides.value)
+        : null
+    const snapY = direction.includes('n')
+      ? nearestSnapDelta([bounds.y], hGuides.value)
+      : direction.includes('s')
+        ? nearestSnapDelta([bounds.y + bounds.height], hGuides.value)
+        : null
+
+    activeSnapGuide.value = { x: snapX?.guide ?? null, y: snapY?.guide ?? null }
+    let { x, y, width, height } = bounds
+    if (snapX) {
+      if (direction.includes('w')) {
+        x += snapX.delta
+        width -= snapX.delta
+      } else if (direction.includes('e')) {
+        width += snapX.delta
+      }
+    }
+    if (snapY) {
+      if (direction.includes('n')) {
+        y += snapY.delta
+        height -= snapY.delta
+      } else if (direction.includes('s')) {
+        height += snapY.delta
+      }
+    }
+    if (width < minSize) {
+      if (direction.includes('w')) x = bounds.x + bounds.width - minSize
+      width = minSize
+    }
+    if (height < minSize) {
+      if (direction.includes('n')) y = bounds.y + bounds.height - minSize
+      height = minSize
+    }
+    return { x, y, width, height }
+  }
+
+  function snapPointToGuides(point: { x: number; y: number }, e: MouseEvent) {
+    if (!snapEnabled(e)) {
+      clearActiveSnapGuide()
+      return point
+    }
+    const snapX = nearestSnapDelta([point.x], vGuides.value)
+    const snapY = nearestSnapDelta([point.y], hGuides.value)
+    activeSnapGuide.value = { x: snapX?.guide ?? null, y: snapY?.guide ?? null }
+    return {
+      x: point.x + (snapX?.delta ?? 0),
+      y: point.y + (snapY?.delta ?? 0),
+    }
+  }
+
+  function boundsFromList(list: Bounds[]) {
+    if (list.length === 0) return null
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const item of list) {
+      minX = Math.min(minX, item.x)
+      minY = Math.min(minY, item.y)
+      maxX = Math.max(maxX, item.x + item.width)
+      maxY = Math.max(maxY, item.y + item.height)
+    }
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
   }
 
   function getSelectedRegion(): CropRegion | null {
@@ -231,6 +439,51 @@ export function useCanvasEngine(
     }
   }
 
+  function pointInsideLayer(point: { x: number; y: number }, layer: ImageLayer) {
+    const width = layer.workingCanvas?.width ?? layer.image.naturalWidth
+    const height = layer.workingCanvas?.height ?? layer.image.naturalHeight
+    return point.x >= 0 && point.y >= 0 && point.x <= width && point.y <= height
+  }
+
+  function clearBrushCursor() {
+    if (!brushCursor.value) return
+    brushCursor.value = null
+    markDirty()
+  }
+
+  function updateBrushCursor(e: MouseEvent, sx: number, sy: number) {
+    if (activeTool.value !== 'brush' && activeTool.value !== 'eraser') {
+      clearBrushCursor()
+      return false
+    }
+    if (spaceHeld.value || isPanning.value) {
+      clearBrushCursor()
+      return false
+    }
+
+    const layer = getActiveLayer()
+    if (!layer || !layer.visible) {
+      clearBrushCursor()
+      return false
+    }
+
+    const layerPoint = screenToLayerPoint(e, layer)
+    if (!pointInsideLayer(layerPoint, layer)) {
+      clearBrushCursor()
+      return false
+    }
+
+    const size = activeTool.value === 'brush' ? brushSettings.value.size : eraserSettings.value.size
+    brushCursor.value = {
+      sx,
+      sy,
+      radius: Math.max(2, (size * view.scale) / 2),
+      tool: activeTool.value,
+    }
+    markDirty()
+    return true
+  }
+
   function sampleLayerColor(e: MouseEvent) {
     const layer = getActiveLayer()
     const wc = layer?.workingCanvas
@@ -240,9 +493,15 @@ export function useCanvasEngine(
     const y = Math.floor(point.y)
     if (x < 0 || y < 0 || x >= wc.width || y >= wc.height) return false
     const data = wc.getContext('2d')!.getImageData(x, y, 1, 1).data
-    editor.colorProcessSourceColor = rgbToHex(data[0], data[1], data[2])
-    editor.colorProcessSeedPoint = { x, y }
+    const color = rgbToHex(data[0], data[1], data[2])
+    if (editor.colorProcessPickingTargetColor) {
+      editor.colorProcessTargetColor = color
+    } else {
+      editor.colorProcessSourceColor = color
+      editor.colorProcessSeedPoint = { x, y }
+    }
     editor.colorProcessPickingColor = false
+    editor.colorProcessPickingTargetColor = false
     editor.setColorProcessPreview(null)
     markDirty()
     return true
@@ -266,28 +525,6 @@ export function useCanvasEngine(
     const width = Math.abs(colorRectEnd.value.x - colorRectStart.value.x)
     const height = Math.abs(colorRectEnd.value.y - colorRectStart.value.y)
     return { x, y, width, height }
-  }
-
-  function getPreviewOverlayCanvas(preview: typeof editor.colorProcessPreview) {
-    if (!preview) return null
-    if (colorPreviewCanvas && colorPreviewSource === preview) return colorPreviewCanvas
-    const overlay = document.createElement('canvas')
-    overlay.width = preview.width
-    overlay.height = preview.height
-    const data = new Uint8ClampedArray(preview.width * preview.height * 4)
-    for (let p = 0; p < preview.mask.length; p++) {
-      const alpha = preview.mask[p]
-      if (!alpha) continue
-      const i = p * 4
-      data[i] = 40
-      data[i + 1] = 199
-      data[i + 2] = 111
-      data[i + 3] = Math.min(180, Math.max(35, alpha))
-    }
-    overlay.getContext('2d')!.putImageData(new ImageData(data, preview.width, preview.height), 0, 0)
-    colorPreviewCanvas = overlay
-    colorPreviewSource = preview
-    return overlay
   }
 
   function cleanupEmptyText() {
@@ -693,7 +930,7 @@ export function useCanvasEngine(
 
     if (e.button !== 0) return
 
-    if (editor.colorProcessPickingColor) {
+    if (editor.colorProcessPickingColor || editor.colorProcessPickingTargetColor) {
       sampleLayerColor(e)
       return
     }
@@ -811,6 +1048,12 @@ export function useCanvasEngine(
 
     // brush / eraser
     if (activeTool.value === 'brush' || activeTool.value === 'eraser') {
+      const layer = getActiveLayer()
+      if (!layer || !pointInsideLayer(screenToLayerPoint(e, layer), layer)) {
+        clearBrushCursor()
+        return
+      }
+      updateBrushCursor(e, sx, sy)
       snapshot?.()
       isBrushing.value = true
       const img = screenToImage(e.clientX, e.clientY)
@@ -1032,6 +1275,7 @@ export function useCanvasEngine(
     const dpr = window.devicePixelRatio || 1
     const sx = (e.clientX - rect.left) * dpr
     const sy = (e.clientY - rect.top) * dpr
+    updateBrushCursor(e, sx, sy)
 
     if (isPanning.value) {
       const dx = (sx - panStartMouse.value.sx) / view.scale
@@ -1082,6 +1326,11 @@ export function useCanvasEngine(
     }
 
     if (isBrushing.value) {
+      const layer = getActiveLayer()
+      if (!layer || !pointInsideLayer(screenToLayerPoint(e, layer), layer)) {
+        lastBrushPos.value = null
+        return
+      }
       const img = screenToImage(e.clientX, e.clientY)
       if (lastBrushPos.value) {
         drawBrushLine(lastBrushPos.value.x, lastBrushPos.value.y, img.ix, img.iy)
@@ -1132,14 +1381,36 @@ export function useCanvasEngine(
           }
           layerDragStartPositions.value = map
         }
+        const movedBounds = boundsFromList([...selectedLayerIds.value]
+          .map(id => {
+            const l = layers.value.find(ll => ll.id === id)
+            const start = layerDragStartPositions.value?.get(id)
+            if (!l || !start) return null
+            return {
+              x: start.x + dx,
+              y: start.y + dy,
+              width: l.image.naturalWidth * l.scaleX,
+              height: l.image.naturalHeight * l.scaleY,
+            }
+          })
+          .filter((item): item is Bounds => Boolean(item)))
+        const snap = movedBounds ? snapMoveBounds(movedBounds, e) : { dx: 0, dy: 0 }
         for (const id of selectedLayerIds.value) {
           const l = layers.value.find(ll => ll.id === id)
           const start = layerDragStartPositions.value.get(id)
-          if (l && start) { l.x = start.x + dx; l.y = start.y + dy }
+          if (l && start) { l.x = start.x + dx + snap.dx; l.y = start.y + dy + snap.dy }
         }
       } else {
-        layer.x = dragStartLayerPos.value.x + dx
-        layer.y = dragStartLayerPos.value.y + dy
+        const width = layer.image.naturalWidth * layer.scaleX
+        const height = layer.image.naturalHeight * layer.scaleY
+        const snap = snapMoveBounds({
+          x: dragStartLayerPos.value.x + dx,
+          y: dragStartLayerPos.value.y + dy,
+          width,
+          height,
+        }, e)
+        layer.x = snap.bounds.x
+        layer.y = snap.bounds.y
       }
       markDirty()
       return
@@ -1158,6 +1429,8 @@ export function useCanvasEngine(
         if (h.includes('n')) { ny = sp.y + dy; nh = sp.h * sp.sy - dy }
         if (nw < 10) { if (h.includes('w')) nx = sp.x + sp.w * sp.sx - 10; nw = 10 }
         if (nh < 10) { if (h.includes('n')) ny = sp.y + sp.h * sp.sy - 10; nh = 10 }
+        const snapped = snapResizeBounds({ x: nx, y: ny, width: nw, height: nh }, h, e, 10)
+        nx = snapped.x; ny = snapped.y; nw = snapped.width; nh = snapped.height
         layer.x = nx; layer.y = ny
         layer.scaleX = Math.max(0.1, nw / sp.w)
         layer.scaleY = Math.max(0.1, nh / sp.h)
@@ -1177,7 +1450,7 @@ export function useCanvasEngine(
       const img = screenToImage(e.clientX, e.clientY)
       const r = regions.find(r => r.id === draggingVertexRegionId.value)
       if (r && r.points && draggingVertexIndex.value >= 0) {
-        r.points[draggingVertexIndex.value] = { x: img.ix, y: img.iy }
+        r.points[draggingVertexIndex.value] = snapPointToGuides({ x: img.ix, y: img.iy }, e)
         const bbox = bboxFromPoints(r.points)
         r.x = bbox.x; r.y = bbox.y; r.width = bbox.width; r.height = bbox.height
       }
@@ -1207,7 +1480,13 @@ export function useCanvasEngine(
       if (nw < 10) { if (dragType.value!.includes('w')) nx = orig.x + orig.width - 10; nw = 10 }
       if (nh < 10) { if (dragType.value!.includes('n')) ny = orig.y + orig.height - 10; nh = 10 }
 
-      const clamped = clampToImage(nx, ny, nw, nh)
+      let snappedBounds = { x: nx, y: ny, width: nw, height: nh }
+      if (dt === 'move') {
+        snappedBounds = snapMoveBounds(snappedBounds, e).bounds
+      } else if (dt) {
+        snappedBounds = snapResizeBounds(snappedBounds, dt, e, 10)
+      }
+      const clamped = clampToImage(snappedBounds.x, snappedBounds.y, snappedBounds.width, snappedBounds.height)
 
       if (draggingText.value) {
         const t = textAnnotations.find(t => t.id === (selectedTextId.value))
@@ -1227,8 +1506,21 @@ export function useCanvasEngine(
           }
           dragStartMultiBounds.value = map
         }
-        const dx = clamped.x - orig.x
-        const dy = clamped.y - orig.y
+        const movedBounds = boundsFromList([...selectedRegionIds.value]
+          .map(id => {
+            const start = dragStartMultiBounds.value?.get(id)
+            if (!start) return null
+            return {
+              x: start.x + dsx,
+              y: start.y + dsy,
+              width: start.width,
+              height: start.height,
+            }
+          })
+          .filter((item): item is Bounds => Boolean(item)))
+        const snap = movedBounds ? snapMoveBounds(movedBounds, e) : { dx: 0, dy: 0 }
+        const dx = dsx + snap.dx
+        const dy = dsy + snap.dy
         for (const id of selectedRegionIds.value) {
           const rr = regions.find(rr => rr.id === id)
           const start = dragStartMultiBounds.value.get(id)
@@ -1287,6 +1579,7 @@ export function useCanvasEngine(
   }
 
   function handleMouseUp(_e: MouseEvent) {
+    clearActiveSnapGuide()
     if (isPanning.value) { isPanning.value = false; return }
 
     if (isColorRectSelecting.value) {
@@ -1531,7 +1824,7 @@ export function useCanvasEngine(
       return
     }
 
-    if (editor.colorProcessPickingColor) {
+    if (editor.colorProcessPickingColor || editor.colorProcessPickingTargetColor) {
       canvas.style.cursor = 'copy'
       return
     }
@@ -1541,13 +1834,7 @@ export function useCanvasEngine(
     }
 
     if (activeTool.value === 'brush' || activeTool.value === 'eraser') {
-      const size = activeTool.value === 'brush' ? brushSettings.value.size : eraserSettings.value.size
-      const cs = size * view.scale
-      // draw cursor circle via CSS custom property or use a crosshair
-      canvas.style.cursor = 'crosshair'
-      // store cursor size for render
-      ;(canvas as any)._cursorSize = cs
-      ;(canvas as any)._cursorTool = activeTool.value
+      canvas.style.cursor = 'none'
       return
     }
 
@@ -1651,28 +1938,32 @@ export function useCanvasEngine(
       const ldw = natW * view.scale
       const ldh = natH * view.scale
 
-      if (showOriginal.value || !layer.workingCanvas) {
+      const colorPreview = editor.colorProcessPreview
+      if (colorPreview && colorPreview.layerId === layer.id) {
+        ctx.drawImage(colorPreview.canvas, ldx, ldy, ldw, ldh)
+      } else if (showOriginal.value || !layer.workingCanvas) {
         ctx.drawImage(img, ldx, ldy, ldw, ldh)
       } else {
         ctx.drawImage(layer.workingCanvas, ldx, ldy, ldw, ldh)
       }
 
-      // layer name label at top-left
-      ctx.save()
-      ctx.font = '11px sans-serif'
-      const labelW = ctx.measureText(layer.name).width + 12
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'
-      ctx.fillRect(ldx, ldy, labelW, 20)
-      ctx.fillStyle = '#fff'
-      ctx.textAlign = 'left'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(layer.name, ldx + 6, ldy + 10)
-      ctx.restore()
+      if (editor.showLayerNames) {
+        ctx.save()
+        ctx.font = '11px sans-serif'
+        const labelW = ctx.measureText(layer.name).width + 12
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'
+        ctx.fillRect(ldx, ldy, labelW, 20)
+        ctx.fillStyle = '#fff'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(layer.name, ldx + 6, ldy + 10)
+        ctx.restore()
+      }
 
       // secondary outline for multi-selected layers (non-active)
       if (layer.id !== activeLayerId.value && selectedLayerIds.value.has(layer.id)) {
         ctx.save()
-        ctx.strokeStyle = '#00e5ff'
+        ctx.strokeStyle = '#66d99a'
         ctx.lineWidth = 1.5
         ctx.setLineDash([4, 3])
         ctx.strokeRect(ldx, ldy, ldw, ldh)
@@ -1718,17 +2009,6 @@ export function useCanvasEngine(
       const ldy = (al.y - view.offsetY) * view.scale
       const ldw = natW * view.scale
       const ldh = natH * view.scale
-      const preview = editor.colorProcessPreview
-
-      if (preview && preview.layerId === al.id) {
-        const overlay = getPreviewOverlayCanvas(preview)
-        if (overlay) {
-          ctx.save()
-          ctx.drawImage(overlay, ldx, ldy, ldw, ldh)
-          ctx.restore()
-        }
-      }
-
       const manualRect = isColorRectSelecting.value
         ? currentColorRect()
         : editor.colorProcessManualRect
@@ -1752,10 +2032,11 @@ export function useCanvasEngine(
     // --- guide lines ---
     for (const y of hGuides.value) {
       const gy = (y - view.offsetY) * view.scale
+      const isActive = activeSnapGuide.value.y === y || (editor.activeGuide?.axis === 'h' && editor.activeGuide.value === y)
       ctx.save()
-      ctx.strokeStyle = '#00e5ff'
-      ctx.lineWidth = 1
-      ctx.setLineDash([6, 4])
+      ctx.strokeStyle = isActive ? '#35d97f' : 'rgba(102, 217, 154, 0.78)'
+      ctx.lineWidth = isActive ? 2 : 1
+      ctx.setLineDash(isActive ? [] : [5, 5])
       ctx.beginPath()
       ctx.moveTo(0, gy)
       ctx.lineTo(canvas.width, gy)
@@ -1765,10 +2046,11 @@ export function useCanvasEngine(
     }
     for (const x of vGuides.value) {
       const gx = (x - view.offsetX) * view.scale
+      const isActive = activeSnapGuide.value.x === x || (editor.activeGuide?.axis === 'v' && editor.activeGuide.value === x)
       ctx.save()
-      ctx.strokeStyle = '#00e5ff'
-      ctx.lineWidth = 1
-      ctx.setLineDash([6, 4])
+      ctx.strokeStyle = isActive ? '#35d97f' : 'rgba(102, 217, 154, 0.78)'
+      ctx.lineWidth = isActive ? 2 : 1
+      ctx.setLineDash(isActive ? [] : [5, 5])
       ctx.beginPath()
       ctx.moveTo(gx, 0)
       ctx.lineTo(gx, canvas.height)
@@ -1809,9 +2091,9 @@ export function useCanvasEngine(
       const sw = mw * view.scale
       const sh = mh * view.scale
       ctx.save()
-      ctx.fillStyle = 'rgba(0,229,255,0.08)'
+      ctx.fillStyle = 'rgba(102, 217, 154, 0.08)'
       ctx.fillRect(sx, sy, sw, sh)
-      ctx.strokeStyle = '#00e5ff'
+      ctx.strokeStyle = '#66d99a'
       ctx.lineWidth = 1
       ctx.setLineDash([4, 4])
       ctx.strokeRect(sx, sy, sw, sh)
@@ -2045,12 +2327,31 @@ export function useCanvasEngine(
       }
     }
 
-    // brush/eraser cursor
-    const cvsAny = canvas as any
-    if (cvsAny._cursorSize && cvsAny._cursorTool) {
+    if (brushCursor.value && (activeTool.value === 'brush' || activeTool.value === 'eraser')) {
+      const isBrush = brushCursor.value.tool === 'brush'
+      const radius = brushCursor.value.radius
+      const color = isBrush ? brushSettings.value.color : '#ffffff'
+      const eraserColor = 'rgba(245, 240, 232, 0.9)'
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(brushCursor.value.sx, brushCursor.value.sy, radius, 0, Math.PI * 2)
+      ctx.fillStyle = isBrush ? 'rgba(40, 199, 111, 0.08)' : 'rgba(245, 240, 232, 0.08)'
+      ctx.strokeStyle = isBrush ? color : eraserColor
+      ctx.lineWidth = 2
+      ctx.fill()
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(brushCursor.value.sx, brushCursor.value.sy, 2, 0, Math.PI * 2)
+      ctx.fillStyle = isBrush ? color : eraserColor
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(brushCursor.value.sx, brushCursor.value.sy, Math.max(1.5, radius + 1.5), 0, Math.PI * 2)
+      ctx.strokeStyle = isBrush ? 'rgba(0, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.55)'
+      ctx.lineWidth = 1
+      ctx.stroke()
+      ctx.restore()
     }
 
-    // Not used here — CSS cursor handles it
   }
 
   function scheduleRender() { markDirty() }
@@ -2060,15 +2361,30 @@ export function useCanvasEngine(
   watch([selectedRegionId, activeTool], () => {
     if (activeTool.value !== 'text') cleanupEmptyText()
     if (activeTool.value !== 'custom') customPoints.value = []
+    if (activeTool.value !== 'brush' && activeTool.value !== 'eraser') {
+      brushCursor.value = null
+    }
     markDirty()
   })
-  watch([brushSettings, eraserSettings], () => markDirty(), { deep: true })
+  watch([brushSettings, eraserSettings], () => {
+    if (brushCursor.value && (activeTool.value === 'brush' || activeTool.value === 'eraser')) {
+      const size = activeTool.value === 'brush' ? brushSettings.value.size : eraserSettings.value.size
+      brushCursor.value.radius = Math.max(2, (size * view.scale) / 2)
+    }
+    markDirty()
+  }, { deep: true })
   watch(showOriginal, () => markDirty())
+  watch(() => editor.showLayerNames, () => markDirty())
+  watch(() => editor.snapToGuides, () => {
+    clearActiveSnapGuide()
+    markDirty()
+  })
   watch(constrainToImage, () => markDirty())
   watch(magicWandTolerance, () => markDirty())
   watch(
     () => [
       editor.colorProcessPickingColor,
+      editor.colorProcessPickingTargetColor,
       editor.colorProcessSelectingRect,
       editor.colorProcessScope,
       editor.colorProcessManualRect,
@@ -2079,6 +2395,7 @@ export function useCanvasEngine(
   )
   watch(layers, () => markDirty(), { deep: true })
   watch(activeLayerId, () => markDirty())
+  watch(selectedLayerIds, () => markDirty(), { deep: true })
   watch(canvasVersion, () => markDirty())
 
   // --- init ---
@@ -2101,12 +2418,41 @@ export function useCanvasEngine(
     canvas.addEventListener('mousedown', handleMouseDown)
     canvas.addEventListener('mousemove', handleMouseMove)
     canvas.addEventListener('mouseup', handleMouseUp)
-    canvas.addEventListener('mouseleave', handleMouseUp)
+    canvas.addEventListener('mouseleave', handleMouseLeave)
     canvas.addEventListener('dblclick', handleDoubleClick)
     canvas.addEventListener('wheel', handleWheel, { passive: false })
     canvas.addEventListener('contextmenu', handleContextMenu)
 
+    const isEditableTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null
+      if (!el) return false
+      return Boolean(el.closest('input, textarea, select, [contenteditable="true"]'))
+    }
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'Semicolon' && !isEditableTarget(e.target)) {
+        e.preventDefault()
+        editor.snapToGuides = !editor.snapToGuides
+        clearActiveSnapGuide()
+        markDirty()
+        return
+      }
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
+        if (e.code === 'Digit1') {
+          e.preventDefault()
+          fitAllLayersToViewport()
+          return
+        }
+        if (e.code === 'Digit2') {
+          e.preventDefault()
+          centerActiveLayer()
+          return
+        }
+        if (e.code === 'Digit0') {
+          e.preventDefault()
+          resetZoomTo100()
+          return
+        }
+      }
       if (e.key === 'Control' || e.key === 'Meta') {
         ctrlOrMetaHeld.value = true
       }
@@ -2139,6 +2485,14 @@ export function useCanvasEngine(
     markDirty()
   }
 
+  function handleMouseLeave(e: MouseEvent) {
+    if (brushCursor.value) {
+      brushCursor.value = null
+      markDirty()
+    }
+    handleMouseUp(e)
+  }
+
   function destroy() {
     cancelAnimationFrame(renderRaf)
     cleanupKeyboardListeners?.()
@@ -2146,6 +2500,7 @@ export function useCanvasEngine(
 
   return {
     view, isDrawing, loadImage, fitToCanvas,
+    fitAllLayersToViewport, centerActiveLayer, resetZoomTo100,
     selectRegion, selectText, getSelectedRegion, getSelectedText,
     initCanvas, destroy, scheduleRender,
     copySelectedRegion, pasteRegion,

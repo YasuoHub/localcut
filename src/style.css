@@ -61,20 +61,73 @@ input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 4px;
-  background: var(--border);
-  border-radius: 2px;
+  height: 14px;
+  background: transparent;
+  border-radius: 999px;
   outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-primary);
+  border: 1px solid rgba(52, 51, 45, 0.75);
 }
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 14px;
   height: 14px;
+  margin-top: -6px;
   border-radius: 50%;
   background: var(--accent);
   cursor: pointer;
-  border: 2px solid var(--bg-primary);
+  border: 2px solid var(--bg-secondary);
+  box-shadow: 0 0 0 1px rgba(40, 199, 111, 0.45);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-primary);
+  border: 1px solid rgba(52, 51, 45, 0.75);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-secondary);
+  box-shadow: 0 0 0 1px rgba(40, 199, 111, 0.45);
+}
+
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 1px rgba(40, 199, 111, 0.45),
+    0 0 0 4px rgba(40, 199, 111, 0.16);
+}
+
+input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow:
+    0 0 0 1px rgba(40, 199, 111, 0.45),
+    0 0 0 4px rgba(40, 199, 111, 0.16);
+}
+
+input[type="range"]:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+input[type="range"]:disabled::-webkit-slider-thumb {
+  cursor: default;
+}
+
+input[type="range"]:disabled::-moz-range-thumb {
+  cursor: default;
 }
 
 button {

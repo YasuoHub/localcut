@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref } from 'vue'
 import type { ToolType } from '../types'
 import { useEditorStore } from '../stores/editor'
 
@@ -55,6 +55,66 @@ function selectTool(tool: ToolType) { editor.setTool(tool) }
 function isShapeActive() { return shapeTools.some(tool => tool.id === editor.activeTool) }
 
 const fileInput = ref<HTMLInputElement | null>(null)
+const shapeGroupRef = ref<HTMLElement | null>(null)
+const shapePopoverRef = ref<HTMLElement | null>(null)
+const shapePopoverStyle = ref<Record<string, string>>({ left: '78px', top: '0px', maxHeight: 'none' })
+const shapePopoverOpen = ref(false)
+let shapePopoverCloseTimer: number | null = null
+
+function updateShapePopoverPosition() {
+  const trigger = shapeGroupRef.value
+  if (!trigger) return
+  const popover = shapePopoverRef.value
+  const rect = trigger.getBoundingClientRect()
+  const margin = 8
+  const gap = 10
+  const popoverWidth = popover?.offsetWidth || 238
+  const popoverHeight = popover?.scrollHeight || popover?.offsetHeight || 310
+  const viewportHeight = window.innerHeight
+  const left = Math.min(rect.right + gap, window.innerWidth - popoverWidth - margin)
+  let top = Math.max(margin, rect.top - 8)
+  let maxHeight = 'none'
+  if (popoverHeight + margin * 2 > viewportHeight) {
+    top = margin
+    maxHeight = `${Math.max(120, viewportHeight - margin * 2)}px`
+  } else if (top + popoverHeight + margin > viewportHeight) {
+    top = viewportHeight - popoverHeight - margin
+  }
+  shapePopoverStyle.value = {
+    left: `${Math.max(margin, left)}px`,
+    top: `${top}px`,
+    maxHeight,
+  }
+}
+
+function openShapePopover() {
+  if (!editor.imageLoaded) return
+  if (shapePopoverCloseTimer) {
+    window.clearTimeout(shapePopoverCloseTimer)
+    shapePopoverCloseTimer = null
+  }
+  shapePopoverOpen.value = true
+  updateShapePopoverPosition()
+  nextTick(updateShapePopoverPosition)
+}
+
+function scheduleShapePopoverClose() {
+  if (shapePopoverCloseTimer) window.clearTimeout(shapePopoverCloseTimer)
+  shapePopoverCloseTimer = window.setTimeout(() => {
+    shapePopoverOpen.value = false
+    shapePopoverCloseTimer = null
+  }, 160)
+}
+
+function selectShapeTool(tool: ToolType) {
+  selectTool(tool)
+  shapePopoverOpen.value = false
+}
+
+onBeforeUnmount(() => {
+  if (shapePopoverCloseTimer) window.clearTimeout(shapePopoverCloseTimer)
+})
+
 function triggerUpload() { fileInput.value?.click() }
 function handleFileChange(e: Event) {
   const input = e.target as HTMLInputElement
@@ -66,7 +126,7 @@ function handleFileChange(e: Event) {
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" @scroll="updateShapePopoverPosition">
     <section class="action-section">
       <button class="nav-btn command-btn" title="导入图片" @click="triggerUpload">
         <svg class="tool-svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -80,12 +140,12 @@ function handleFileChange(e: Event) {
         <svg class="tool-svg" viewBox="0 0 24 24" aria-hidden="true">
           <path v-for="path in iconPaths.matting" :key="path" :d="path" />
         </svg>
-        <span class="tool-label">抠图</span>
+        <span class="tool-label">AI抠图</span>
       </button>
     </section>
 
     <section class="tool-section">
-      <div class="section-label">工具</div>
+      <div class="section-label"></div>
 
       <button
         v-for="tool in directTools" :key="tool.id"
@@ -101,12 +161,22 @@ function handleFileChange(e: Event) {
         <span class="tool-label">{{ tool.label }}</span>
       </button>
 
-      <div class="shape-group">
+      <div
+        ref="shapeGroupRef"
+        class="shape-group"
+        :class="{ 'is-open': shapePopoverOpen }"
+        @mouseenter="openShapePopover"
+        @mouseleave="scheduleShapePopoverClose"
+        @focusin="openShapePopover"
+        @focusout="scheduleShapePopoverClose"
+      >
         <button
           class="nav-btn"
           :class="{ active: isShapeActive() }"
           :disabled="!editor.imageLoaded"
           :title="editor.imageLoaded ? '图形' : '图形：请先导入图片'"
+          :aria-expanded="shapePopoverOpen"
+          aria-haspopup="menu"
           @click="selectTool('rect')"
         >
           <svg class="tool-svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -114,7 +184,19 @@ function handleFileChange(e: Event) {
           </svg>
           <span class="tool-label">图形</span>
         </button>
-        <div class="shape-popover">
+        <div
+          ref="shapePopoverRef"
+          class="shape-popover"
+          :style="shapePopoverStyle"
+          role="menu"
+          aria-label="图形选择"
+          @mouseenter="openShapePopover"
+          @mouseleave="scheduleShapePopoverClose"
+        >
+          <div class="shape-popover-head">
+            <span>图形</span>
+            <small>选择绘制形状</small>
+          </div>
           <button
             v-for="shape in shapeTools"
             :key="shape.id"
@@ -122,7 +204,8 @@ function handleFileChange(e: Event) {
             :class="{ active: editor.activeTool === shape.id }"
             :disabled="!editor.imageLoaded"
             :title="shape.label"
-            @click="selectTool(shape.id)"
+            role="menuitem"
+            @click="selectShapeTool(shape.id)"
           >
             <svg class="shape-svg" viewBox="0 0 24 24" aria-hidden="true">
               <path v-for="path in iconPaths[shape.icon]" :key="path" :d="path" />
@@ -134,7 +217,7 @@ function handleFileChange(e: Event) {
     </section>
 
     <section class="tool-section">
-      <div class="section-label">插入</div>
+      <div class="section-label"></div>
       <button
         class="nav-btn"
         :class="{ active: editor.activeTool === 'text' }"
@@ -153,8 +236,14 @@ function handleFileChange(e: Event) {
 
 <style scoped>
 .sidebar {
-  width: 82px;
-  background: var(--bg-secondary);
+  width: 68px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: visible;
+  background:
+    linear-gradient(180deg, rgba(10, 16, 14, 0.9), transparent 38%),
+    var(--bg-secondary);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -167,22 +256,24 @@ function handleFileChange(e: Event) {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 7px;
+  flex-shrink: 0;
+  gap: 5px;
+  padding: 6px 5px;
   border-bottom: 1px solid var(--border);
 }
 
 .section-label {
-  padding: 3px 3px 1px;
+  padding: 2px 2px 1px;
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 700;
+  text-align: center;
 }
 
 .nav-btn {
   width: 100%;
-  height: 48px;
-  padding: 5px 4px 4px;
+  height: 46px;
+  padding: 4px 3px 3px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -196,16 +287,19 @@ function handleFileChange(e: Event) {
 }
 
 .nav-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: rgba(40, 199, 111, 0.07);
   color: var(--text-primary);
-  border-color: transparent;
+  border-color: rgba(40, 199, 111, 0.2);
 }
 
 .nav-btn.active {
-  background: rgba(74, 168, 255, 0.09);
-  color: #9dccff;
-  border-color: transparent;
-  box-shadow: inset 3px 0 0 rgba(74, 168, 255, 0.78);
+  background:
+    linear-gradient(180deg, rgba(40, 199, 111, 0.16), rgba(40, 199, 111, 0.08));
+  color: var(--accent-hover);
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(40, 199, 111, 0.28),
+    0 0 18px rgba(40, 199, 111, 0.14);
 }
 
 .nav-btn:disabled {
@@ -215,17 +309,28 @@ function handleFileChange(e: Event) {
 
 .command-btn {
   color: var(--accent);
-  border-color: transparent;
-  background: rgba(40, 199, 111, 0.07);
+  border-color: rgba(40, 199, 111, 0.18);
+  background:
+    linear-gradient(180deg, rgba(40, 199, 111, 0.12), rgba(40, 199, 111, 0.05));
 }
 
 .matting-btn {
   color: var(--text-secondary);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+  border-color: rgba(255, 255, 255, 0.045);
+}
+
+.matting-btn:hover:not(:disabled) {
+  color: var(--accent-hover);
+  background:
+    linear-gradient(180deg, rgba(40, 199, 111, 0.12), rgba(40, 199, 111, 0.055));
+  border-color: rgba(40, 199, 111, 0.28);
 }
 
 .tool-svg,
 .shape-svg {
-  width: 22px;
+  width: 21px;
   height: 20px;
   flex-shrink: 0;
   fill: none;
@@ -246,52 +351,127 @@ function handleFileChange(e: Event) {
 
 .shape-group {
   position: relative;
+  width: 100%;
+}
+
+.shape-group::after {
+  content: '';
+  position: absolute;
+  left: calc(100% - 2px);
+  top: 0;
+  z-index: 49;
+  width: 22px;
+  height: 100%;
+  pointer-events: auto;
 }
 
 .shape-popover {
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 0;
+  position: fixed;
   z-index: 50;
-  width: 226px;
-  display: none;
+  width: 238px;
+  overflow-y: auto;
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  gap: 7px;
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 34%),
+    var(--bg-secondary);
+  border: 1px solid rgba(74, 72, 63, 0.92);
   border-radius: var(--radius-lg);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-4px) scale(0.98);
+  transform-origin: left top;
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    visibility 0s linear 0.12s;
 }
 
 .shape-group:hover .shape-popover,
-.shape-group:focus-within .shape-popover {
-  display: grid;
+.shape-group:focus-within .shape-popover,
+.shape-group.is-open .shape-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0) scale(1);
+  transition-delay: 0s;
+}
+
+.shape-popover::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 25px;
+  width: 10px;
+  height: 10px;
+  background: var(--bg-secondary);
+  border-left: 1px solid rgba(74, 72, 63, 0.92);
+  border-bottom: 1px solid rgba(74, 72, 63, 0.92);
+  transform: rotate(45deg);
+}
+
+.shape-popover-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 2px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.shape-popover-head small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .shape-option {
-  height: 54px;
-  padding: 6px 7px 5px;
+  height: 56px;
+  padding: 7px 7px 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    var(--bg-primary);
+  border: 1px solid rgba(52, 51, 45, 0.96);
   color: var(--text-secondary);
   border-radius: var(--radius);
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    transform 0.14s ease;
 }
 
 .shape-option:hover:not(:disabled) {
-  border-color: var(--selection);
+  border-color: rgba(40, 199, 111, 0.58);
   color: var(--text-primary);
+  background:
+    linear-gradient(180deg, rgba(40, 199, 111, 0.11), rgba(40, 199, 111, 0.045));
+  transform: translateY(-1px);
 }
 
 .shape-option.active {
-  color: var(--selection);
-  border-color: rgba(74, 168, 255, 0.45);
-  background: rgba(74, 168, 255, 0.1);
+  color: var(--accent-hover);
+  border-color: var(--accent);
+  background:
+    linear-gradient(180deg, rgba(40, 199, 111, 0.18), rgba(40, 199, 111, 0.08));
+  box-shadow:
+    inset 0 0 0 1px rgba(40, 199, 111, 0.22),
+    0 8px 20px rgba(40, 199, 111, 0.08);
 }
 
 .shape-option small {

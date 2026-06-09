@@ -1,37 +1,35 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { useEditorStore } from '../../stores/editor'
 import { useHistoryStore } from '../../stores/history'
 import { generateGridRegions, duplicateRegionBySpacing, generateSliceRegions, validateSliceOptions, generateGuideRegions } from '../../composables/useBatchRegions'
 import { nextRegionName } from '../../composables/shapeUtils'
+import { builtinQuickSizePresets, useQuickSizePresets, type QuickSizePreset } from '../../composables/useQuickSizePresets'
 import type { CropRegion, DuplicateOptions } from '../../types'
 
 const editor = useEditorStore()
 const history = useHistoryStore()
 
-interface PresetCropSize {
-  id: string
-  name: string
-  width: number
-  height: number
-}
+const {
+  presets: presetCropSizes,
+  customPresets,
+  addCustomPreset,
+  deleteCustomPreset,
+  exportConfig,
+  importConfig,
+} = useQuickSizePresets()
 
-const presetCropSizes: PresetCropSize[] = [
-  { id: 'free', name: '自由裁剪', width: 0, height: 0 },
-  { id: 'wechat_cover', name: '公众号首图', width: 900, height: 383 },
-  { id: 'wechat_secondary', name: '公众号次图', width: 200, height: 200 },
-  { id: 'moments_cover', name: '朋友圈封面', width: 1080, height: 1080 },
-  { id: 'desktop_wallpaper', name: '电脑壁纸', width: 1920, height: 1080 },
-  { id: 'logo_design', name: 'Logo 设计', width: 500, height: 500 },
-  { id: 'square_main', name: '方形主图', width: 800, height: 800 },
-  { id: 'vertical_main', name: '竖版主图', width: 800, height: 1200 },
-  { id: 'pdd_store', name: '拼多多店铺首页', width: 750, height: 1000 },
-  { id: 'photo_1r', name: '标准 1 寸 / 1R', width: 295, height: 413 },
-  { id: 'photo_2r', name: '标准 2 寸 / 2R', width: 413, height: 626 },
-  { id: 'id_card', name: '二代身份证', width: 358, height: 441 },
-]
+const selectedPresetId = ref(builtinQuickSizePresets[0]?.id ?? 'free')
+const customSizeName = ref('')
+const customSizeWidth = ref<number | null>(null)
+const customSizeHeight = ref<number | null>(null)
+const customSizeNameInput = ref<HTMLInputElement | null>(null)
+const quickSizePopoverOpen = ref(false)
+const quickSizeFileInput = ref<HTMLInputElement | null>(null)
+const quickSizeMessage = ref('')
 
-function createPresetRegion(preset: PresetCropSize) {
+function createPresetRegion(preset: QuickSizePreset) {
+  selectedPresetId.value = preset.id
   if (preset.width === 0 || preset.height === 0) {
     editor.setTool('rect')
     return
@@ -39,22 +37,26 @@ function createPresetRegion(preset: PresetCropSize) {
 
   const layer = editor.activeLayer
   if (!layer) return
-  const imgW = layer.image.naturalWidth
-  const imgH = layer.image.naturalHeight
-  let rectW = imgW
-  let rectH = Math.round(imgW * (preset.height / preset.width))
+  const layerW = layer.image.naturalWidth * layer.scaleX
+  const layerH = layer.image.naturalHeight * layer.scaleY
+  const rectW = preset.width
+  const rectH = preset.height
   const shouldConstrain = editor.isSingleLayerMode && editor.constrainToImage
-  if (shouldConstrain && rectH > imgH) {
-    rectH = imgH
-    rectW = Math.round(imgH * (preset.width / preset.height))
+  let rectX = Math.round(layer.x + (layerW - rectW) / 2)
+  let rectY = Math.round(layer.y + (layerH - rectH) / 2)
+  if (shouldConstrain && rectW <= layerW) {
+    rectX = Math.max(layer.x, Math.min(rectX, layer.x + layerW - rectW))
+  }
+  if (shouldConstrain && rectH <= layerH) {
+    rectY = Math.max(layer.y, Math.min(rectY, layer.y + layerH - rectH))
   }
 
   history.snapshot()
   const region: CropRegion = {
     id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: nextRegionName(),
-    x: 0,
-    y: shouldConstrain ? Math.max(0, Math.round((imgH - rectH) / 2)) : Math.round((imgH - rectH) / 2),
+    x: rectX,
+    y: rectY,
     width: rectW,
     height: rectH,
     shape: 'rect',
@@ -62,6 +64,82 @@ function createPresetRegion(preset: PresetCropSize) {
   editor.regions.push(region)
   editor.selectRegion(region.id)
   editor.invalidateCanvas()
+}
+
+function handleAddCustomPreset() {
+  const preset = addCustomPreset({
+    name: customSizeName.value,
+    width: Number(customSizeWidth.value),
+    height: Number(customSizeHeight.value),
+  })
+  if (!preset) {
+    quickSizeMessage.value = '请输入名称和有效宽高。'
+    quickSizePopoverOpen.value = true
+    return
+  }
+  selectedPresetId.value = preset.id
+  customSizeName.value = ''
+  customSizeWidth.value = null
+  customSizeHeight.value = null
+  quickSizePopoverOpen.value = false
+  quickSizeMessage.value = '已添加自定义尺寸。'
+}
+
+function openQuickSizePopover() {
+  quickSizePopoverOpen.value = true
+  quickSizeMessage.value = ''
+  nextTick(() => customSizeNameInput.value?.focus())
+}
+
+function cancelAddCustomPreset() {
+  quickSizePopoverOpen.value = false
+  customSizeName.value = ''
+  customSizeWidth.value = null
+  customSizeHeight.value = null
+  quickSizeMessage.value = ''
+}
+
+function handleDeleteCustomPreset(id: string) {
+  if (!window.confirm('确认删除这个自定义快捷尺寸？')) return
+  if (deleteCustomPreset(id)) {
+    if (selectedPresetId.value === id) selectedPresetId.value = builtinQuickSizePresets[0]?.id ?? 'free'
+    quickSizeMessage.value = '已删除自定义尺寸。'
+  }
+}
+
+function exportQuickSizeConfig() {
+  const bundle = exportConfig()
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'quick-size-presets.localcut-config.json'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function triggerQuickSizeImport() {
+  quickSizeFileInput.value?.click()
+}
+
+function handleQuickSizeImport(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const imported = importConfig(String(reader.result ?? ''))
+      quickSizeMessage.value = imported > 0 ? `已导入 ${imported} 个自定义尺寸。` : '没有可导入的新尺寸。'
+    } catch (err) {
+      quickSizeMessage.value = '配置文件解析失败。'
+    } finally {
+      input.value = ''
+    }
+  }
+  reader.readAsText(file)
 }
 
 // ---- grid ----
@@ -132,23 +210,81 @@ function handleGuidSlice() {
   <section class="section">
     <div class="section-title">批量切图</div>
 
-    <details class="batch-detail">
-      <summary class="batch-summary">快捷区域尺寸
+    <details class="batch-detail" open>
+      <summary class="batch-summary">快捷尺寸
         <span v-if="!editor.activeLayer" class="summary-hint">（需活动图层）</span>
       </summary>
       <div class="preset-grid">
-        <button
+        <div
           v-for="preset in presetCropSizes"
           :key="preset.id"
-          class="preset-chip"
-          :disabled="!editor.activeLayer && preset.width > 0"
-          :title="preset.width > 0 ? `${preset.name} ${preset.width}x${preset.height}` : preset.name"
-          @click="createPresetRegion(preset)"
+          class="preset-item"
+          :class="{ selected: selectedPresetId === preset.id, custom: preset.custom }"
         >
-          <span>{{ preset.name }}</span>
-          <small v-if="preset.width > 0">{{ preset.width }}x{{ preset.height }}</small>
-        </button>
+          <button
+            class="preset-chip"
+            :disabled="!editor.activeLayer && preset.width > 0"
+            :title="preset.width > 0 ? `${preset.name} ${preset.width}x${preset.height}` : preset.name"
+            @click="createPresetRegion(preset)"
+          >
+            <span>{{ preset.name }}</span>
+            <small v-if="preset.width > 0">{{ preset.width }}x{{ preset.height }}</small>
+          </button>
+          <button
+            v-if="preset.custom"
+            class="preset-delete"
+            title="删除自定义尺寸"
+            @click.stop="handleDeleteCustomPreset(preset.id)"
+          >
+            ×
+          </button>
+        </div>
+        <div class="preset-item quick-size-add-item">
+          <button
+            class="preset-chip add-preset-card"
+            type="button"
+            :class="{ active: quickSizePopoverOpen }"
+            title="添加快捷尺寸"
+            aria-label="添加快捷尺寸"
+            :aria-expanded="quickSizePopoverOpen"
+            @click="openQuickSizePopover"
+          >
+            <span class="add-preset-plus">+</span>
+          </button>
+          <form
+            v-if="quickSizePopoverOpen"
+            class="quick-size-popover"
+            @submit.prevent="handleAddCustomPreset"
+            @keydown.esc.stop.prevent="cancelAddCustomPreset"
+          >
+            <label class="popover-field">
+              <span>名称</span>
+              <input ref="customSizeNameInput" type="text" v-model="customSizeName" class="text-input" placeholder="例：详情页横图" />
+            </label>
+            <div class="popover-size-row">
+              <label class="popover-field">
+                <span>宽</span>
+                <input type="number" v-model.number="customSizeWidth" class="text-input" min="1" placeholder="800" />
+              </label>
+              <label class="popover-field">
+                <span>高</span>
+                <input type="number" v-model.number="customSizeHeight" class="text-input" min="1" placeholder="800" />
+              </label>
+            </div>
+            <div v-if="quickSizeMessage" class="quick-size-message popover-message">{{ quickSizeMessage }}</div>
+            <div class="popover-actions">
+              <button class="btn-ghost" type="button" @click="cancelAddCustomPreset">取消</button>
+              <button class="btn-primary" type="submit">添加</button>
+            </div>
+          </form>
+        </div>
       </div>
+      <div class="quick-size-config-row">
+        <button class="btn-ghost" :disabled="customPresets.length === 0" @click="exportQuickSizeConfig">导出配置</button>
+        <button class="btn-ghost" @click="triggerQuickSizeImport">导入配置</button>
+        <input ref="quickSizeFileInput" type="file" accept=".json,.localcut-config.json,application/json" hidden @change="handleQuickSizeImport" />
+      </div>
+      <div v-if="quickSizeMessage && !quickSizePopoverOpen" class="quick-size-message">{{ quickSizeMessage }}</div>
     </details>
 
     <!-- Grid generation -->
@@ -279,7 +415,14 @@ function handleGuidSlice() {
 .summary-hint { font-size: 10px; color: var(--text-muted); font-weight: 400; }
 .batch-body { padding: 8px 0 0 0; }
 .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding-top: 8px; }
+.preset-item { position: relative; min-width: 0; }
+.preset-item.selected .preset-chip {
+  border-color: rgba(40, 199, 111, 0.58);
+  background: rgba(40, 199, 111, 0.08);
+  color: var(--text-primary);
+}
 .preset-chip {
+  width: 100%;
   min-height: 38px; padding: 5px 7px; background: var(--bg-primary); border: 1px solid var(--border);
   border-radius: var(--radius); color: var(--text-secondary); display: flex; flex-direction: column;
   align-items: flex-start; justify-content: center; gap: 2px; text-align: left; min-width: 0;
@@ -288,6 +431,99 @@ function handleGuidSlice() {
 .preset-chip:disabled { opacity: 0.45; cursor: default; }
 .preset-chip span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .preset-chip small { color: var(--text-muted); font-size: 10px; }
+.preset-delete {
+  position: absolute; top: 3px; right: 3px;
+  width: 16px; height: 16px; border: none; border-radius: 3px;
+  background: rgba(0, 0, 0, 0.38); color: var(--text-muted);
+  font-size: 12px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.preset-item:hover .preset-delete { opacity: 1; }
+.preset-delete:hover { color: var(--danger); background: rgba(229, 92, 92, 0.16); }
+.quick-size-add-item { z-index: 2; }
+.add-preset-card {
+  align-items: center;
+  border-style: dashed;
+  color: var(--text-muted);
+}
+.add-preset-card:hover,
+.add-preset-card.active {
+  border-color: var(--accent);
+  background: rgba(40, 199, 111, 0.08);
+  color: var(--text-primary);
+}
+.add-preset-plus {
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 300;
+}
+.quick-size-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: min(236px, calc(200% + 5px));
+  padding: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+.quick-size-popover::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  right: 18px;
+  width: 10px;
+  height: 10px;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+.quick-size-add-item:nth-child(odd) .quick-size-popover {
+  left: 0;
+  right: auto;
+}
+.quick-size-add-item:nth-child(odd) .quick-size-popover::before {
+  left: 18px;
+  right: auto;
+}
+.popover-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.popover-field span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.popover-size-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.popover-message { margin-top: 8px; color: #e5a400; }
+.popover-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+.quick-size-config-row {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px; margin-top: 6px;
+}
+.btn-ghost {
+  min-height: 30px; padding: 6px 8px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text-secondary); font-size: 11px; cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--accent); color: var(--text-primary); }
+.btn-ghost:disabled { opacity: 0.45; cursor: default; }
+.quick-size-message { margin-top: 6px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 .warn { color: #e5a400; font-size: 11px; }
 .hint { color: var(--text-muted); font-size: 10px; }
 .btn-primary {

@@ -20,7 +20,10 @@ const emit = defineEmits<{
             羽化
             <span class="tip-icon" title="对边缘进行高斯模糊，让抠图边缘过渡更加自然柔和，避免生硬的锯齿感">?</span>
           </span>
-          <span class="val">{{ store.edgeSettings.feather }}px</span>
+          <span class="numeric-value">
+            <input type="number" min="0" max="50" v-model.number="store.edgeSettings.feather" />
+            <span>px</span>
+          </span>
         </label>
         <input
           type="range" min="0" max="50"
@@ -35,7 +38,10 @@ const emit = defineEmits<{
             扩展
             <span class="tip-icon" title="向外膨胀遮罩区域，扩大保留范围。可用于恢复被误删的边缘区域">?</span>
           </span>
-          <span class="val">{{ store.edgeSettings.expand }}px</span>
+          <span class="numeric-value">
+            <input type="number" min="0" max="30" v-model.number="store.edgeSettings.expand" />
+            <span>px</span>
+          </span>
         </label>
         <input
           type="range" min="0" max="30"
@@ -50,7 +56,10 @@ const emit = defineEmits<{
             收缩
             <span class="tip-icon" title="向内收缩遮罩区域，缩小保留范围。可用于去除边缘残留的背景杂色">?</span>
           </span>
-          <span class="val">{{ store.edgeSettings.contract }}px</span>
+          <span class="numeric-value">
+            <input type="number" min="0" max="30" v-model.number="store.edgeSettings.contract" />
+            <span>px</span>
+          </span>
         </label>
         <input
           type="range" min="0" max="30"
@@ -83,10 +92,10 @@ const emit = defineEmits<{
 
 <style scoped>
 .matting-control-panel {
-  display: flex; flex-direction: column; gap: 16px;
+  display: flex; flex-direction: column; gap: 18px;
 }
 .matting-section {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 14px;
 }
 .matting-section-title {
   font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
@@ -94,7 +103,8 @@ const emit = defineEmits<{
 }
 
 .slider-group {
-  display: flex; flex-direction: column; gap: 4px;
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 2px 0 4px;
 }
 .slider-label {
   font-size: 11px; color: var(--text-secondary);
@@ -114,15 +124,43 @@ const emit = defineEmits<{
 .tip-icon:hover {
   background: var(--accent); color: #fff; border-color: var(--accent);
 }
-.val { color: var(--accent); font-weight: 500; }
-
-.slider {
-  width: 100%; height: 4px; -webkit-appearance: none;
-  background: var(--bg-primary); border-radius: 2px; outline: none; cursor: pointer;
+.numeric-value {
+  height: 24px;
+  min-width: 62px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
-.slider::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 14px; height: 14px;
-  border-radius: 50%; background: var(--accent); cursor: pointer;
+.numeric-value input {
+  min-width: 0;
+  width: 100%;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: right;
+  outline: none;
+  font: inherit;
+}
+.numeric-value input::-webkit-outer-spin-button,
+.numeric-value input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.numeric-value span {
+  color: var(--text-muted);
+  user-select: none;
 }
 
 .action-btn {

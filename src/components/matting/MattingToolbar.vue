@@ -34,7 +34,11 @@ function setBrushMode(mode: MaskBrushMode) {
 
     <div class="matting-section">
       <div class="matting-section-title">
-        画笔大小 <span class="val">{{ store.brush.size }}px</span>
+        画笔大小
+        <span class="numeric-value">
+          <input type="number" min="2" max="200" v-model.number="store.brush.size" />
+          <span>px</span>
+        </span>
       </div>
       <input
         type="range"
@@ -50,17 +54,54 @@ function setBrushMode(mode: MaskBrushMode) {
 
 <style scoped>
 .matting-toolbar {
-  display: flex; flex-direction: column; gap: 16px;
+  display: flex; flex-direction: column; gap: 18px;
 }
 .matting-section {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 12px;
 }
 .matting-section-title {
   font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
   color: var(--text-muted); display: flex; align-items: center;
   justify-content: space-between;
 }
-.val { font-weight: 400; color: var(--text-secondary); }
+.numeric-value {
+  height: 24px;
+  min-width: 62px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.numeric-value input {
+  min-width: 0;
+  width: 100%;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: right;
+  outline: none;
+  font: inherit;
+}
+.numeric-value input::-webkit-outer-spin-button,
+.numeric-value input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.numeric-value span {
+  color: var(--text-muted);
+  user-select: none;
+}
 
 .mode-toggle {
   display: flex; gap: 4px;
@@ -81,13 +122,4 @@ function setBrushMode(mode: MaskBrushMode) {
 .mode-icon.remove { color: #ef5350; }
 .mode-label { font-size: 10px; }
 
-.slider {
-  width: 100%; height: 4px; -webkit-appearance: none;
-  background: var(--bg-primary); border-radius: 2px; outline: none;
-  cursor: pointer;
-}
-.slider::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 16px; height: 16px;
-  border-radius: 50%; background: var(--accent); cursor: pointer;
-}
 </style>

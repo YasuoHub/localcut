@@ -25,6 +25,24 @@ const models = [
   { id: 'modnet-fp16' as MattingModelType, label: 'MODNet (FP16)', desc: '精细 (~13MB, 需 WebGPU)' },
 ]
 
+type MattingIcon =
+  | 'upload' | 'layers' | 'edit-layer' | 'spark' | 'refresh' | 'x' | 'reset'
+  | 'download' | 'send' | 'close' | 'loader'
+
+const iconPaths: Record<MattingIcon, string[]> = {
+  upload: ['M12 15V4', 'M7 9l5-5 5 5', 'M5 15v4h14v-4'],
+  layers: ['M12 4l8 4-8 4-8-4 8-4z', 'M4 12l8 4 8-4', 'M4 16l8 4 8-4'],
+  'edit-layer': ['M4 7l8-4 8 4-8 4-8-4z', 'M4 13l8 4 3-1.5', 'M16 19l4-4 2 2-4 4h-2v-2z'],
+  spark: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z', 'M19 4v3', 'M17.5 5.5h3'],
+  refresh: ['M20 11a8 8 0 0 0-14-4l-2 2', 'M4 4v5h5', 'M4 13a8 8 0 0 0 14 4l2-2', 'M20 20v-5h-5'],
+  x: ['M6 6l12 12', 'M18 6L6 18'],
+  reset: ['M5 6v5h5', 'M5.5 11A7 7 0 1 0 8 5.7'],
+  download: ['M12 4v10', 'M8 10l4 4 4-4', 'M5 20h14'],
+  send: ['M4 12l16-7-7 16-2-7-7-2z', 'M11 14l4-5'],
+  close: ['M7 7l10 10', 'M17 7L7 17'],
+  loader: ['M12 3a9 9 0 0 1 9 9'],
+}
+
 const canRunInference = computed(() =>
   store.sourceImage !== null && !store.isProcessing,
 )
@@ -223,10 +241,11 @@ defineExpose({ open, close })
         <div class="matting-header">
           <span class="matting-title">智能抠图</span>
           <div class="matting-header-actions">
-            <span class="matting-model-tag" v-if="store.stage !== 'idle'">
-              {{ store.selectedModel === 'modnet' ? 'MODNet INT8' : 'MODNet FP16' }}
-            </span>
-            <button class="matting-close" @click="close">&times;</button>
+            <button class="matting-close" title="关闭" @click="close">
+              <svg class="matting-close-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path v-for="path in iconPaths.close" :key="path" :d="path" />
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -238,7 +257,10 @@ defineExpose({ open, close })
             <div class="matting-section">
               <div class="matting-section-title">图片</div>
               <button class="matting-btn" @click="triggerUpload">
-                📁 上传图片
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.upload" :key="path" :d="path" />
+                </svg>
+                <span>上传图片</span>
               </button>
               <input
                 ref="fileInput"
@@ -253,7 +275,10 @@ defineExpose({ open, close })
                 @click="useCurrentLayer(false)"
                 title="导入活动图层的原始图片"
               >
-                📋 使用当前图层（原图）
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.layers" :key="path" :d="path" />
+                </svg>
+                <span>当前图层（原图）</span>
               </button>
               <button
                 class="matting-btn"
@@ -261,7 +286,10 @@ defineExpose({ open, close })
                 @click="useCurrentLayer(true)"
                 title="导入活动图层编辑后的画面（含画笔/橡皮修改）"
               >
-                ✏️ 使用当前图层（编辑后）
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths['edit-layer']" :key="path" :d="path" />
+                </svg>
+                <span>当前图层（编辑后）</span>
               </button>
             </div>
 
@@ -286,15 +314,21 @@ defineExpose({ open, close })
                 :disabled="!canRunInference"
                 @click="handleRunInference"
               >
-                <span v-if="store.isProcessing">⏳ {{ store.progress.message }}</span>
-                <span v-else>🔮 一键抠图</span>
+                <svg class="matting-btn-icon" :class="{ spinning: store.isProcessing }" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths[store.isProcessing ? 'loader' : 'spark']" :key="path" :d="path" />
+                </svg>
+                <span v-if="store.isProcessing">{{ store.progress.message }}</span>
+                <span v-else>一键抠图</span>
               </button>
               <button
                 v-if="store.isProcessing"
                 class="matting-btn matting-btn-cancel"
                 @click="cancel"
               >
-                取消
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.x" :key="path" :d="path" />
+                </svg>
+                <span>取消</span>
               </button>
             </div>
 
@@ -308,7 +342,10 @@ defineExpose({ open, close })
                   @click="handleRunInference"
                   :title="`使用 ${store.selectedModel === 'modnet' ? 'MODNet INT8' : 'MODNet FP16'} 重新推理`"
                 >
-                  🔄 重新推理
+                  <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path v-for="path in iconPaths.refresh" :key="path" :d="path" />
+                  </svg>
+                  <span>重新推理</span>
                   <span class="re-infer-model-tag">{{ store.selectedModel === 'modnet' ? 'INT8' : 'FP16' }}</span>
                 </button>
                 <button
@@ -316,22 +353,33 @@ defineExpose({ open, close })
                   class="matting-btn matting-btn-cancel"
                   @click="cancel"
                 >
-                  取消
+                  <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path v-for="path in iconPaths.x" :key="path" :d="path" />
+                  </svg>
+                  <span>取消</span>
                 </button>
               </div>
 
               <div class="matting-section">
                 <div class="matting-section-title">快捷操作</div>
-                <button class="matting-btn matting-btn-ghost" @click="handleReset">重置</button>
-                <button class="matting-btn matting-btn-ghost" @click="close">关闭</button>
+                <button class="matting-btn matting-btn-ghost" @click="handleReset">
+                  <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path v-for="path in iconPaths.reset" :key="path" :d="path" />
+                  </svg>
+                  <span>重置</span>
+                </button>
               </div>
             </template>
 
             <!-- Quick actions (before editing) -->
             <div class="matting-section" v-if="!showEditingTools && store.sourceImage">
               <div class="matting-section-title">快捷操作</div>
-              <button class="matting-btn matting-btn-ghost" @click="handleReset">重置</button>
-              <button class="matting-btn matting-btn-ghost" @click="close">关闭</button>
+              <button class="matting-btn matting-btn-ghost" @click="handleReset">
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.reset" :key="path" :d="path" />
+                </svg>
+                <span>重置</span>
+              </button>
             </div>
           </div>
 
@@ -358,9 +406,6 @@ defineExpose({ open, close })
                 </template>
                 <template v-else-if="store.stage === 'done'">已完成</template>
                 <template v-else-if="!store.isProcessing">准备中...</template>
-              </div>
-              <div v-if="store.sourceImage" class="current-model-info">
-                当前模型：{{ store.selectedModel === 'modnet' ? 'MODNet INT8' : 'MODNet FP16' }}
               </div>
               <div v-if="store.lastError" class="matting-error">
                 {{ store.lastError }}
@@ -390,10 +435,16 @@ defineExpose({ open, close })
             <!-- Export actions -->
             <div class="matting-section matting-export-section" v-if="store.resultCanvas">
               <button class="matting-btn" @click="handleExportPng">
-                💾 导出透明 PNG
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.download" :key="path" :d="path" />
+                </svg>
+                <span>导出透明 PNG</span>
               </button>
               <button class="matting-btn matting-btn-accent" @click="handleSendToCanvas">
-                📤 发送到画布
+                <svg class="matting-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.send" :key="path" :d="path" />
+                </svg>
+                <span>发送到画布</span>
               </button>
             </div>
           </div>
@@ -419,35 +470,53 @@ defineExpose({ open, close })
 <style scoped>
 .matting-overlay {
   position: fixed; inset: 0; z-index: 10000;
-  background: rgba(0,0,0,0.7);
+  background:
+    radial-gradient(circle at 50% 18%, rgba(40, 199, 111, 0.12), transparent 32%),
+    rgba(0,0,0,0.72);
   display: flex; align-items: center; justify-content: center;
 }
 .matting-workspace {
   width: 96vw; max-width: 1400px; height: 92vh;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.028), transparent 120px),
+    var(--bg-secondary);
+  border: 1px solid rgba(74, 72, 63, 0.92);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+  box-shadow:
+    0 22px 70px rgba(0,0,0,0.62),
+    inset 0 1px 0 rgba(255,255,255,0.04);
   display: flex; flex-direction: column; overflow: hidden;
 }
 
 /* Header */
 .matting-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  padding: 10px 16px; border-bottom: 1px solid rgba(52, 51, 45, 0.9);
   flex-shrink: 0; height: 48px;
 }
-.matting-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.matting-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
 .matting-header-actions { display: flex; align-items: center; gap: 12px; }
-.matting-model-tag {
-  font-size: 11px; padding: 2px 8px; border-radius: 10px;
-  background: rgba(79,195,247,0.15); color: var(--accent);
-}
 .matting-close {
-  background: none; border: none; color: var(--text-muted);
-  font-size: 24px; cursor: pointer; line-height: 1; padding: 0 4px;
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  cursor: pointer; line-height: 1;
 }
-.matting-close:hover { color: var(--text-primary); }
+.matting-close:hover { color: var(--text-primary); background: var(--bg-hover); border-color: var(--border-strong); }
+.matting-close-icon,
+.matting-btn-icon {
+  width: 15px; height: 15px; flex-shrink: 0;
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.matting-btn-icon.spinning {
+  animation: matting-spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+}
+.matting-btn > span {
+  min-width: 0;
+  line-height: 1.2;
+}
 
 /* Body */
 .matting-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
@@ -457,6 +526,14 @@ defineExpose({ open, close })
   width: 200px; border-right: 1px solid var(--border);
   padding: 12px; display: flex; flex-direction: column; gap: 12px;
   overflow-y: auto; flex-shrink: 0;
+  background: rgba(17, 17, 15, 0.36);
+}
+.matting-left .matting-btn {
+  width: 100%;
+}
+.matting-left .matting-btn-icon {
+  width: 16px;
+  height: 16px;
 }
 .matting-section { display: flex; flex-direction: column; gap: 6px; }
 .matting-section-title {
@@ -464,25 +541,31 @@ defineExpose({ open, close })
   color: var(--text-muted);
 }
 .matting-btn {
-  padding: 8px 12px; background: var(--bg-primary); color: var(--text-primary);
+  min-height: 34px;
+  padding: 8px 10px; background: var(--bg-primary); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--radius);
   font-size: 12px; cursor: pointer; text-align: left;
-  transition: background 0.15s, border-color 0.15s;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.matting-btn:hover:not(:disabled) { border-color: var(--text-muted); }
+.matting-btn:hover:not(:disabled) {
+  border-color: rgba(40, 199, 111, 0.35);
+  background: rgba(40, 199, 111, 0.06);
+}
 .matting-btn:disabled { opacity: 0.4; cursor: default; }
 .matting-btn-primary {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent); color: #07100b; border-color: var(--accent);
+  font-weight: 700;
 }
-.matting-btn-primary:hover:not(:disabled) { opacity: 0.9; }
+.matting-btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 .matting-btn-cancel {
   color: #ef5350; border-color: rgba(239,83,80,0.3);
 }
 .matting-btn-ghost {
-  background: transparent; border: none; padding: 6px 12px;
+  background: transparent; border: 1px solid transparent; padding: 6px 10px;
   color: var(--text-secondary);
 }
-.matting-btn-ghost:hover:not(:disabled) { color: var(--text-primary); }
+.matting-btn-ghost:hover:not(:disabled) { color: var(--text-primary); border-color: var(--border); background: var(--bg-primary); }
 .matting-select {
   padding: 7px 8px; background: var(--bg-primary); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -494,9 +577,10 @@ defineExpose({ open, close })
   background: rgba(255,255,255,0.2); margin-left: 4px;
 }
 .matting-btn-accent {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent); color: #07100b; border-color: var(--accent);
+  font-weight: 700;
 }
-.matting-btn-accent:hover:not(:disabled) { opacity: 0.9; }
+.matting-btn-accent:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 
 /* Center */
 .matting-center {
@@ -518,14 +602,10 @@ defineExpose({ open, close })
   width: 220px; border-left: 1px solid var(--border);
   padding: 12px; display: flex; flex-direction: column; gap: 12px;
   overflow-y: auto; flex-shrink: 0;
+  background: rgba(17, 17, 15, 0.28);
 }
 .matting-export-section { margin-top: auto; }
 .matting-status { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
-.current-model-info {
-  font-size: 10px; color: var(--text-muted);
-  padding: 3px 8px; background: rgba(79,195,247,0.08);
-  border-radius: var(--radius); margin-top: 2px;
-}
 .info-detail { color: var(--text-muted); font-size: 11px; }
 
 .progress-bar-wrap { display: flex; align-items: center; gap: 8px; }
@@ -558,5 +638,8 @@ defineExpose({ open, close })
   background: none; border: none; color: #ef5350;
   font-size: 16px; cursor: pointer; padding: 0; line-height: 1;
   flex-shrink: 0;
+}
+@keyframes matting-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

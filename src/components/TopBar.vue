@@ -28,6 +28,14 @@ const showSettings = ref(false)
             限制裁剪框在图片内
             <span class="setting-hint" v-if="!editor.isSingleLayerMode">（仅单图层可用）</span>
           </label>
+          <label class="setting-item">
+            <input type="checkbox" v-model="editor.showLayerNames" />
+            图层名称展示
+          </label>
+          <label class="setting-item">
+            <input type="checkbox" v-model="editor.snapToGuides" />
+            参考线吸附
+          </label>
           <div class="setting-divider"></div>
           <div class="setting-label">导入图层排列</div>
           <div class="setting-row">
@@ -69,6 +77,8 @@ const showSettings = ref(false)
           <div class="shortcut-item"><kbd>滚轮</kbd> 缩放画布</div>
           <div class="shortcut-item"><kbd>Ctrl+点击标尺</kbd> 添加参考线</div>
           <div class="shortcut-item"><kbd>Ctrl+右键参考线</kbd> 删除参考线</div>
+          <div class="shortcut-item"><kbd>Ctrl+Shift+;</kbd> 切换参考线吸附</div>
+          <div class="shortcut-item"><kbd>Alt+拖动</kbd> 临时关闭吸附</div>
         </div>
       </div>
     </Teleport>

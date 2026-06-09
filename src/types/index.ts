@@ -90,6 +90,7 @@ export interface ColorProcessPreview {
   height: number
   mask: Uint8ClampedArray
   count: number
+  canvas: HTMLCanvasElement
 }
 
 export interface ColorProcessSettings {

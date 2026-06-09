@@ -14,6 +14,12 @@ import type {
 } from '../types'
 
 export const useEditorStore = defineStore('editor', () => {
+  const MAX_LAYER_NAME_LENGTH = 100
+
+  function truncateLayerName(name: string) {
+    return Array.from(name).slice(0, MAX_LAYER_NAME_LENGTH).join('')
+  }
+
   // ---- layers ----
   const layers = ref<ImageLayer[]>([])
   const activeLayerId = ref<string | null>(null)
@@ -22,14 +28,23 @@ export const useEditorStore = defineStore('editor', () => {
   const imageLoaded = computed(() => layers.value.length > 0)
   const activeLayer = computed(() => layers.value.find(l => l.id === activeLayerId.value) ?? null)
 
+  function formatLayerName(index: number, fileName?: string) {
+    const trimmed = fileName?.trim()
+    if (!trimmed) return `图层${index}`
+    const chars = Array.from(trimmed)
+    const shortName = chars.length > 10 ? `${chars.slice(0, 10).join('')}...` : trimmed
+    return truncateLayerName(`图层${index}（${shortName}）`)
+  }
+
   function addLayer(img: HTMLImageElement, name?: string) {
     const id = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    const layerIndex = layers.value.length + 1
     const wc = document.createElement('canvas')
     wc.width = img.naturalWidth
     wc.height = img.naturalHeight
     wc.getContext('2d')!.drawImage(img, 0, 0)
     const layer: ImageLayer = {
-      id, name: name || `图层 ${layers.value.length + 1}`,
+      id, name: formatLayerName(layerIndex, name),
       image: img,
       workingCanvas: wc,
       x: layerInsertX.value, y: layerInsertY.value,
@@ -52,6 +67,9 @@ export const useEditorStore = defineStore('editor', () => {
     const idx = layers.value.findIndex(l => l.id === id)
     if (idx === -1) return
     layers.value.splice(idx, 1)
+    const newSet = new Set(selectedLayerIds.value)
+    newSet.delete(id)
+    selectedLayerIds.value = newSet
     if (activeLayerId.value === id) {
       // prefer previous active, then previous in list, then any remaining
       if (prevActiveLayerId.value && layers.value.some(l => l.id === prevActiveLayerId.value)) {
@@ -64,6 +82,13 @@ export const useEditorStore = defineStore('editor', () => {
     }
   }
 
+  function clearLayers() {
+    layers.value.splice(0)
+    activeLayerId.value = null
+    prevActiveLayerId.value = null
+    selectedLayerIds.value = new Set()
+  }
+
   function setActiveLayer(id: string) {
     if (layers.value.some(l => l.id === id) && activeLayerId.value !== id) {
       prevActiveLayerId.value = activeLayerId.value
@@ -73,7 +98,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   function renameLayer(id: string, name: string) {
     const layer = layers.value.find(l => l.id === id)
-    if (layer) layer.name = name
+    if (layer) layer.name = truncateLayerName(name)
   }
 
   function moveLayer(fromIdx: number, toIdx: number) {
@@ -187,29 +212,40 @@ export const useEditorStore = defineStore('editor', () => {
   const colorProcessManualRect = ref<ColorProcessRect | null>(null)
   const colorProcessSeedPoint = ref<{ x: number; y: number } | null>(null)
   const colorProcessPickingColor = ref(false)
+  const colorProcessPickingTargetColor = ref(false)
   const colorProcessSelectingRect = ref(false)
   const colorProcessPreview = ref<ColorProcessPreview | null>(null)
 
   function startColorPick() {
     colorProcessPickingColor.value = true
+    colorProcessPickingTargetColor.value = false
+    colorProcessSelectingRect.value = false
+  }
+
+  function startColorTargetPick() {
+    colorProcessPickingColor.value = false
+    colorProcessPickingTargetColor.value = true
     colorProcessSelectingRect.value = false
   }
 
   function startColorRectSelect() {
     colorProcessSelectingRect.value = true
     colorProcessPickingColor.value = false
+    colorProcessPickingTargetColor.value = false
     colorProcessScope.value = 'manual'
   }
 
   function cancelColorProcessCanvasMode() {
     colorProcessPickingColor.value = false
+    colorProcessPickingTargetColor.value = false
     colorProcessSelectingRect.value = false
   }
 
   function setColorProcessManualRect(rect: ColorProcessRect | null) {
     colorProcessManualRect.value = rect
-    colorProcessScope.value = 'manual'
+    if (rect) colorProcessScope.value = 'manual'
     colorProcessPreview.value = null
+    invalidateCanvas()
   }
 
   function setColorProcessPreview(preview: ColorProcessPreview | null) {
@@ -220,6 +256,8 @@ export const useEditorStore = defineStore('editor', () => {
   // ---- canvas settings ----
   const constrainToImage = ref(false)
   const showOriginal = ref(false)
+  const showLayerNames = ref(true)
+  const snapToGuides = ref(true)
 
   // 单图层模式下强制约束裁剪框在图层内
   const isSingleLayerMode = computed(() => layers.value.length === 1)
@@ -232,6 +270,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   // ---- heavy processing indicator ----
   const isHeavyProcessing = ref(false)
+  const heavyProcessingText = ref('')
 
   // ---- render trigger ----
   const canvasVersion = ref(0)
@@ -240,6 +279,7 @@ export const useEditorStore = defineStore('editor', () => {
   // ---- guide lines ----
   const hGuides = ref<number[]>([]) // y positions
   const vGuides = ref<number[]>([]) // x positions
+  const activeGuide = ref<{ axis: 'h' | 'v'; index: number; value: number } | null>(null)
 
   function addHGuide(y: number) {
     const rounded = Math.round(y)
@@ -263,15 +303,34 @@ export const useEditorStore = defineStore('editor', () => {
     vGuides.value = vGuides.value.filter(g => Math.abs(g - x) > 4)
     invalidateCanvas()
   }
+  function moveHGuide(index: number, y: number) {
+    if (index < 0 || index >= hGuides.value.length) return
+    hGuides.value[index] = Math.round(y)
+    activeGuide.value = { axis: 'h', index, value: hGuides.value[index] }
+    invalidateCanvas()
+  }
+  function moveVGuide(index: number, x: number) {
+    if (index < 0 || index >= vGuides.value.length) return
+    vGuides.value[index] = Math.round(x)
+    activeGuide.value = { axis: 'v', index, value: vGuides.value[index] }
+    invalidateCanvas()
+  }
+  function sortGuides() {
+    hGuides.value = [...new Set(hGuides.value.map(Math.round))].sort((a, b) => a - b)
+    vGuides.value = [...new Set(vGuides.value.map(Math.round))].sort((a, b) => a - b)
+    activeGuide.value = null
+    invalidateCanvas()
+  }
   function clearGuides() {
     hGuides.value = []
     vGuides.value = []
+    activeGuide.value = null
     invalidateCanvas()
   }
 
   return {
     layers, activeLayerId, activeLayer, imageLoaded,
-    addLayer, removeLayer, setActiveLayer, renameLayer, moveLayer, moveLayerUp, moveLayerDown, toggleLayerVisible,
+    addLayer, removeLayer, clearLayers, setActiveLayer, renameLayer, moveLayer, moveLayerUp, moveLayerDown, toggleLayerVisible,
     regions, selectedRegionId, selectedRegionIds, selectedRegion,
     selectRegion, toggleRegionCheck, deleteRegion, clearRegions,
     selectedLayerIds, toggleLayerCheck, clearSelectedLayers,
@@ -283,13 +342,14 @@ export const useEditorStore = defineStore('editor', () => {
     colorProcessScope, colorProcessAction, colorProcessContiguous,
     colorProcessRemoveFringe, colorProcessDespeckle,
     colorProcessManualRect, colorProcessSeedPoint,
-    colorProcessPickingColor, colorProcessSelectingRect, colorProcessPreview,
-    startColorPick, startColorRectSelect, cancelColorProcessCanvasMode,
+    colorProcessPickingColor, colorProcessPickingTargetColor, colorProcessSelectingRect, colorProcessPreview,
+    startColorPick, startColorTargetPick, startColorRectSelect, cancelColorProcessCanvasMode,
     setColorProcessManualRect, setColorProcessPreview,
-    constrainToImage, showOriginal, isSingleLayerMode,
-    isHeavyProcessing,
+    constrainToImage, showOriginal, showLayerNames, snapToGuides, isSingleLayerMode,
+    isHeavyProcessing, heavyProcessingText,
     canvasVersion, invalidateCanvas,
-    hGuides, vGuides, addHGuide, addVGuide, removeHGuide, removeVGuide, clearGuides,
+    hGuides, vGuides, activeGuide,
+    addHGuide, addVGuide, removeHGuide, removeVGuide, moveHGuide, moveVGuide, sortGuides, clearGuides,
     layerArrangeDirection, layerArrangeGap,
   }
 })

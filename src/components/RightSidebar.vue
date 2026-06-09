@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { CropRegion, TextAnnotation, ImageFormat, ExportInspectionResult } from '../types'
+import type { CropRegion, TextAnnotation, ImageFormat, ExportInspectionResult, ColorProcessScope } from '../types'
 import { useExport } from '../composables/useExport'
 import { inspectExport } from '../composables/useExportInspection'
 import { useEditorStore } from '../stores/editor'
@@ -50,6 +50,13 @@ const upperPanelStyle = computed(() => ({
 const listPanelStyle = computed(() => ({
   height: `${listPanelPercent.value}%`,
 }))
+
+const selectedLayerCount = computed(() =>
+  editor.layers.filter(layer => editor.selectedLayerIds.has(layer.id)).length,
+)
+const layerDeleteButtonText = computed(() =>
+  selectedLayerCount.value > 0 ? `删除 ${selectedLayerCount.value} 项` : '删除全部',
+)
 
 function clampListPercent(value: number) {
   return Math.max(20, Math.min(80, value))
@@ -243,8 +250,8 @@ function commitTextEdits() {
 
 // ---- layer color processing ----
 const colorProcessMessage = ref('')
-
-const colorProcessAffectedCount = computed(() => editor.colorProcessPreview?.count ?? 0)
+const colorProcessExpanded = ref(false)
+const hasColorProcessPreview = computed(() => Boolean(editor.colorProcessPreview))
 
 function getColorProcessRect() {
   const layer = editor.activeLayer
@@ -287,9 +294,22 @@ function getColorProcessOptions() {
   }
 }
 
+function setColorProcessScope(scope: ColorProcessScope) {
+  if (editor.colorProcessScope === scope) return
+  editor.colorProcessScope = scope
+  if (editor.colorProcessManualRect) editor.setColorProcessManualRect(null)
+  else editor.setColorProcessPreview(null)
+  editor.cancelColorProcessCanvasMode()
+  colorProcessMessage.value = ''
+}
+
 function previewColorProcess() {
   const layer = editor.activeLayer
   const wc = layer?.workingCanvas
+  if (editor.colorProcessScope === 'manual' && !editor.colorProcessManualRect) {
+    window.alert('请先点击“框选范围”，在画布上拖拽选择要处理的区域。')
+    return
+  }
   const options = getColorProcessOptions()
   if (!layer || !wc || !options) {
     colorProcessMessage.value = '请先选择图层和有效处理范围。'
@@ -297,23 +317,34 @@ function previewColorProcess() {
   }
 
   editor.isHeavyProcessing = true
+  editor.heavyProcessingText = '正在生成颜色预览...'
   requestAnimationFrame(() => {
     try {
       const ctx = wc.getContext('2d')!
       const imageData = ctx.getImageData(0, 0, wc.width, wc.height)
       const result = buildColorProcessMask(imageData, options)
+      if (result.count === 0) {
+        editor.setColorProcessPreview(null)
+        colorProcessMessage.value = '没有命中颜色，请提高容差或重新取色。'
+        return
+      }
+      const previewImageData = applyColorProcess(imageData, result.mask, options)
+      const previewCanvas = document.createElement('canvas')
+      previewCanvas.width = wc.width
+      previewCanvas.height = wc.height
+      previewCanvas.getContext('2d')!.putImageData(previewImageData, 0, 0)
       editor.setColorProcessPreview({
         layerId: layer.id,
         width: wc.width,
         height: wc.height,
         mask: result.mask,
         count: result.count,
+        canvas: previewCanvas,
       })
-      colorProcessMessage.value = result.count > 0
-        ? `预览命中 ${result.count} 个像素。`
-        : '没有命中像素，请提高容差或重新取色。'
+      colorProcessMessage.value = '预览已生成，可取消预览或应用到图层。'
     } finally {
       editor.isHeavyProcessing = false
+      editor.heavyProcessingText = ''
     }
   })
 }
@@ -321,6 +352,10 @@ function previewColorProcess() {
 function applyColorProcessToLayer() {
   const layer = editor.activeLayer
   const wc = layer?.workingCanvas
+  if (editor.colorProcessScope === 'manual' && !editor.colorProcessManualRect) {
+    window.alert('请先点击“框选范围”，在画布上拖拽选择要处理的区域。')
+    return
+  }
   const options = getColorProcessOptions()
   if (!layer || !wc || !options) {
     colorProcessMessage.value = '请先选择图层和有效处理范围。'
@@ -328,6 +363,7 @@ function applyColorProcessToLayer() {
   }
 
   editor.isHeavyProcessing = true
+  editor.heavyProcessingText = '正在应用颜色处理...'
   requestAnimationFrame(() => {
     try {
       const ctx = wc.getContext('2d')!
@@ -338,7 +374,7 @@ function applyColorProcessToLayer() {
         : buildColorProcessMask(imageData, options)
 
       if (maskResult.count === 0) {
-        colorProcessMessage.value = '没有命中像素，未修改图层。'
+        colorProcessMessage.value = '没有命中颜色，未修改图层。'
         return
       }
 
@@ -346,12 +382,25 @@ function applyColorProcessToLayer() {
       const result = applyColorProcess(imageData, maskResult.mask, options)
       ctx.putImageData(result, 0, 0)
       editor.setColorProcessPreview(null)
+      editor.setColorProcessManualRect(null)
+      editor.cancelColorProcessCanvasMode()
       editor.invalidateCanvas()
-      colorProcessMessage.value = `已处理 ${maskResult.count} 个像素。`
+      colorProcessMessage.value = '已应用到图层。'
     } finally {
       editor.isHeavyProcessing = false
+      editor.heavyProcessingText = ''
     }
   })
+}
+
+function cancelColorProcessPreview() {
+  editor.setColorProcessPreview(null)
+  colorProcessMessage.value = ''
+}
+
+function toggleColorProcessPreview() {
+  if (editor.colorProcessPreview) cancelColorProcessPreview()
+  else previewColorProcess()
 }
 
 function clearColorProcessRange() {
@@ -374,10 +423,18 @@ watch(
     editor.colorProcessManualRect,
   ],
   () => {
-    editor.setColorProcessPreview(null)
+    if (editor.colorProcessPreview) {
+      editor.setColorProcessPreview(null)
+      colorProcessMessage.value = ''
+    }
   },
   { deep: true },
 )
+
+watch(() => editor.activeLayerId, () => {
+  colorProcessExpanded.value = false
+  colorProcessMessage.value = ''
+})
 
 // ---- global export state ----
 const isExporting = ref(false)
@@ -636,6 +693,18 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
   history.snapshot()
   editor.moveLayer(fromIdx, toIdx)
 }
+
+function deleteLayerSelection() {
+  history.snapshot()
+  if (selectedLayerCount.value === 0) {
+    editor.clearLayers()
+    return
+  }
+  const ids = editor.layers
+    .filter(layer => editor.selectedLayerIds.has(layer.id))
+    .map(layer => layer.id)
+  for (const id of ids) editor.removeLayer(id)
+}
 </script>
 
 <template>
@@ -656,8 +725,11 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
       <div class="panel-body scrollbar">
       <template v-if="activeTab === 'properties'">
         <section class="section" v-if="editor.layers.length > 0">
-          <div class="section-title">图层
-            <button class="clear-all-btn" title="清空图层" @click="history.snapshot(); editor.layers.splice(0); editor.activeLayerId = null">清空</button>
+          <div class="section-title">
+            <span>图层</span>
+            <div class="layer-title-actions">
+              <button class="clear-all-btn" title="删除图层" @click="deleteLayerSelection">{{ layerDeleteButtonText }}</button>
+            </div>
           </div>
           <div class="layer-list scrollbar">
             <div
@@ -678,6 +750,7 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
                 v-else
                 class="layer-rename-input"
                 v-model="renameValue"
+                maxlength="100"
                 @blur="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
                 @keyup.enter="editor.renameLayer(layer.id, renameValue || layer.name); renamingId = null"
                 @click.stop
@@ -690,93 +763,178 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
               <button class="layer-delete" title="删除图层" @click.stop="history.snapshot(); editor.removeLayer(layer.id)">×</button>
             </div>
           </div>
-        </section>
 
-        <section class="section color-process-section" v-if="editor.activeLayer">
-          <div class="section-title">
-            颜色处理
-            <span v-if="colorProcessAffectedCount > 0" class="count">{{ colorProcessAffectedCount }}像素</span>
-          </div>
-
-          <div class="field-row">
-            <div class="field">
-              <label>源颜色</label>
-              <input type="color" v-model="editor.colorProcessSourceColor" class="color-input" />
-            </div>
-            <div class="field">
-              <label>目标颜色</label>
-              <input type="color" v-model="editor.colorProcessTargetColor" class="color-input" :disabled="editor.colorProcessAction === 'transparent'" />
-            </div>
-          </div>
-
-          <div class="color-tool-row">
-            <button class="tf-btn" :class="{ active: editor.colorProcessPickingColor }" @click="editor.startColorPick()">
-              {{ editor.colorProcessPickingColor ? '点击画布取色' : '吸取颜色' }}
+          <div class="layer-tool-panel" v-if="editor.activeLayer">
+            <button
+              type="button"
+              class="layer-tool-toggle"
+              :class="{ expanded: colorProcessExpanded }"
+              :aria-expanded="colorProcessExpanded"
+              @click="colorProcessExpanded = !colorProcessExpanded"
+            >
+              <span class="tool-toggle-main">
+                <span class="tool-chevron">›</span>
+                <span>当前图层 · 颜色处理</span>
+              </span>
+              <span class="tool-toggle-meta">
+                <span class="active-layer-name">{{ editor.activeLayer.name }}</span>
+              </span>
             </button>
-            <button class="tf-btn" :class="{ active: editor.colorProcessSelectingRect }" @click="editor.startColorRectSelect()">
-              {{ editor.colorProcessSelectingRect ? '拖拽框选中' : '框选范围' }}
-            </button>
-          </div>
 
-          <div class="field">
-            <label>处理范围</label>
-            <div class="radio-group scope-radio-group">
-              <label class="radio"><input type="radio" value="layer" v-model="editor.colorProcessScope" />整层</label>
-              <label class="radio"><input type="radio" value="selected-region" v-model="editor.colorProcessScope" :disabled="!editor.selectedRegion" />选区</label>
-              <label class="radio"><input type="radio" value="manual" v-model="editor.colorProcessScope" :disabled="!editor.colorProcessManualRect" />框选</label>
+            <div v-if="colorProcessExpanded" class="color-process-panel">
+              <div class="field">
+                <label>处理目标</label>
+                <div class="radio-group">
+                  <label class="radio"><input type="radio" value="transparent" v-model="editor.colorProcessAction" />透明</label>
+                  <label class="radio"><input type="radio" value="replace" v-model="editor.colorProcessAction" />替换色</label>
+                </div>
+              </div>
+
+              <div class="color-fields-row" :class="{ compact: editor.colorProcessAction !== 'replace' }">
+                <div class="field">
+                  <label>源颜色</label>
+                  <div class="color-pick-row">
+                    <input type="color" v-model="editor.colorProcessSourceColor" class="color-input" />
+                    <button class="tf-btn color-pick-btn" :class="{ active: editor.colorProcessPickingColor }" @click="editor.startColorPick()">
+                      <svg class="pick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M14.5 4.5l5 5-9.6 9.6H5v-4.9l9.5-9.7Z" />
+                        <path d="M13 6l5 5" />
+                        <path d="M5 19h5" />
+                      </svg>
+                      <span>{{ editor.colorProcessPickingColor ? '取色中' : '吸色' }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="field" v-if="editor.colorProcessAction === 'replace'">
+                  <label>目标颜色</label>
+                  <div class="color-pick-row">
+                    <input type="color" v-model="editor.colorProcessTargetColor" class="color-input" />
+                    <button class="tf-btn color-pick-btn" :class="{ active: editor.colorProcessPickingTargetColor }" @click="editor.startColorTargetPick()">
+                      <svg class="pick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M14.5 4.5l5 5-9.6 9.6H5v-4.9l9.5-9.7Z" />
+                        <path d="M13 6l5 5" />
+                        <path d="M5 19h5" />
+                      </svg>
+                      <span>{{ editor.colorProcessPickingTargetColor ? '取色中' : '吸色' }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>处理范围</label>
+                <div class="radio-group scope-radio-group">
+                  <label class="radio">
+                    <input type="radio" value="layer" :checked="editor.colorProcessScope === 'layer'" @change="setColorProcessScope('layer')" />整层
+                  </label>
+                  <label class="radio">
+                    <input type="radio" value="selected-region" :checked="editor.colorProcessScope === 'selected-region'" :disabled="!editor.selectedRegion" @change="setColorProcessScope('selected-region')" />选区
+                  </label>
+                  <label class="radio">
+                    <input type="radio" value="manual" :checked="editor.colorProcessScope === 'manual'" @change="setColorProcessScope('manual')" />框选
+                  </label>
+                </div>
+              </div>
+
+              <div v-if="editor.colorProcessScope === 'manual'" class="manual-range-row">
+                <div class="range-readout">
+                  <span v-if="editor.colorProcessManualRect">
+                    框选 {{ Math.round(editor.colorProcessManualRect.width) }} x {{ Math.round(editor.colorProcessManualRect.height) }}
+                  </span>
+                  <span v-else>未设置框选范围</span>
+                  <button v-if="editor.colorProcessManualRect" class="inline-clear-btn" @click="clearColorProcessRange">清除</button>
+                </div>
+                <button class="tf-btn range-select-btn" :class="{ active: editor.colorProcessSelectingRect }" @click="editor.startColorRectSelect()">
+                  {{ editor.colorProcessSelectingRect ? '拖拽中' : '框选范围' }}
+                </button>
+              </div>
+
+              <div class="field">
+                <label>容差</label>
+                <div class="size-control-row">
+                  <input type="range" min="0" max="160" v-model.number="editor.colorProcessTolerance" />
+                  <label class="numeric-value">
+                    <input type="number" min="0" max="160" v-model.number="editor.colorProcessTolerance" />
+                  </label>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>边缘羽化</label>
+                <div class="size-control-row">
+                  <input type="range" min="0" max="12" v-model.number="editor.colorProcessFeather" />
+                  <label class="numeric-value">
+                    <input type="number" min="0" max="12" v-model.number="editor.colorProcessFeather" />
+                    <span>px</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="color-check-grid">
+                <label class="checkbox-label"><input type="checkbox" v-model="editor.colorProcessContiguous" />只处理连续区域</label>
+                <label class="checkbox-label"><input type="checkbox" v-model="editor.colorProcessRemoveFringe" />去白边/去杂色</label>
+                <label class="checkbox-label"><input type="checkbox" v-model="editor.colorProcessDespeckle" />清理孤立噪点</label>
+              </div>
+
+              <div class="btn-row color-action-row">
+                <button
+                  class="btn-primary preview-single-btn"
+                  :class="{ 'cancel-mode': hasColorProcessPreview }"
+                  :disabled="editor.isHeavyProcessing"
+                  @click="toggleColorProcessPreview"
+                >
+                  {{ hasColorProcessPreview ? '取消预览' : '预览' }}
+                </button>
+                <button class="btn-primary export-single-btn" :disabled="editor.isHeavyProcessing" @click="applyColorProcessToLayer">应用到图层</button>
+              </div>
             </div>
           </div>
-
-          <div v-if="editor.colorProcessManualRect" class="range-readout">
-            框选 {{ Math.round(editor.colorProcessManualRect.width) }} x {{ Math.round(editor.colorProcessManualRect.height) }}
-            <button class="inline-clear-btn" @click="clearColorProcessRange">清除</button>
-          </div>
-
-          <div class="field">
-            <label>容差: {{ editor.colorProcessTolerance }}</label>
-            <input type="range" min="0" max="160" v-model.number="editor.colorProcessTolerance" />
-          </div>
-
-          <div class="field">
-            <label>边缘羽化: {{ editor.colorProcessFeather }}px</label>
-            <input type="range" min="0" max="12" v-model.number="editor.colorProcessFeather" />
-          </div>
-
-          <div class="field">
-            <label>处理结果</label>
-            <div class="radio-group">
-              <label class="radio"><input type="radio" value="transparent" v-model="editor.colorProcessAction" />透明</label>
-              <label class="radio"><input type="radio" value="replace" v-model="editor.colorProcessAction" />替换色</label>
-            </div>
-          </div>
-
-          <div class="color-check-grid">
-            <label class="checkbox-label"><input type="checkbox" v-model="editor.colorProcessContiguous" />只处理连续区域</label>
-            <label class="checkbox-label"><input type="checkbox" v-model="editor.colorProcessRemoveFringe" />去白边/去杂色</label>
-            <label class="checkbox-label"><input type="checkbox" v-model="editor.colorProcessDespeckle" />清理孤立噪点</label>
-          </div>
-
-          <div class="btn-row color-action-row">
-            <button class="btn-primary preview-single-btn" :disabled="editor.isHeavyProcessing" @click="previewColorProcess">预览</button>
-            <button class="btn-primary export-single-btn" :disabled="editor.isHeavyProcessing" @click="applyColorProcessToLayer">应用到图层</button>
-          </div>
-          <div v-if="colorProcessMessage" class="color-process-message">{{ colorProcessMessage }}</div>
         </section>
 
         <section class="section" v-if="editor.activeTool === 'brush'">
           <div class="section-title">画笔设置</div>
-          <div class="field"><label>大小: {{ editor.brushSettings.size }}px</label><input type="range" min="1" max="100" v-model.number="editor.brushSettings.size" /></div>
-          <div class="field"><label>颜色</label><input type="color" v-model="editor.brushSettings.color" class="color-input" /></div>
+          <div class="field">
+            <div class="brush-control-row">
+              <input
+                type="color"
+                v-model="editor.brushSettings.color"
+                class="color-input brush-color-input"
+                title="画笔颜色"
+              />
+              <input type="range" min="1" max="100" v-model.number="editor.brushSettings.size" />
+              <label class="numeric-value">
+                <input type="number" min="1" max="100" v-model.number="editor.brushSettings.size" />
+                <span>px</span>
+              </label>
+            </div>
+          </div>
         </section>
 
         <section class="section" v-if="editor.activeTool === 'eraser'">
           <div class="section-title">橡皮设置</div>
-          <div class="field"><label>大小: {{ editor.eraserSettings.size }}px</label><input type="range" min="1" max="150" v-model.number="editor.eraserSettings.size" /></div>
+          <div class="field">
+            <label>大小</label>
+            <div class="size-control-row">
+              <input type="range" min="1" max="150" v-model.number="editor.eraserSettings.size" />
+              <label class="numeric-value">
+                <input type="number" min="1" max="150" v-model.number="editor.eraserSettings.size" />
+                <span>px</span>
+              </label>
+            </div>
+          </div>
         </section>
 
         <section class="section" v-if="editor.activeTool === 'magic-wand'">
           <div class="section-title">魔棒设置</div>
-          <div class="field"><label>容差: {{ editor.magicWandTolerance }}</label><input type="range" min="1" max="100" v-model.number="editor.magicWandTolerance" /></div>
+          <div class="field">
+            <label>容差</label>
+            <div class="size-control-row">
+              <input type="range" min="1" max="100" v-model.number="editor.magicWandTolerance" />
+              <label class="numeric-value">
+                <input type="number" min="1" max="100" v-model.number="editor.magicWandTolerance" />
+              </label>
+            </div>
+          </div>
         </section>
 
         <section class="section" v-if="editor.selectedRegion">
@@ -854,16 +1012,40 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
               </label>
             </div>
           </div>
-          <div class="field" v-if="exp.exportFormat === 'jpeg' || exp.exportFormat === 'webp'"><label>质量: {{ exp.exportQuality }}%</label><input type="range" min="10" max="100" v-model.number="exp.exportQuality" /></div>
-          <div class="field"><label>设备像素比: {{ exp.exportDpr }}x</label><input type="range" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" /></div>
+          <div class="field" v-if="exp.exportFormat === 'jpeg' || exp.exportFormat === 'webp'">
+            <label>质量</label>
+            <div class="size-control-row">
+              <input type="range" min="10" max="100" v-model.number="exp.exportQuality" />
+              <label class="numeric-value">
+                <input type="number" min="10" max="100" v-model.number="exp.exportQuality" />
+                <span>%</span>
+              </label>
+            </div>
+          </div>
+          <div class="field">
+            <label>设备像素比</label>
+            <div class="size-control-row">
+              <input type="range" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" />
+              <label class="numeric-value">
+                <input type="number" min="1" max="4" step="0.5" v-model.number="exp.exportDpr" />
+                <span>x</span>
+              </label>
+            </div>
+          </div>
           <div class="field">
             <label class="checkbox-label">
               <input type="checkbox" v-model="exp.upscaleEnabled" />AI 超分 {{ exp.upscaleScale }}×
             </label>
             <div class="upscale-hint" v-if="exp.upscaleEnabled">首次需下载模型 ~7.5 MB，之后缓存</div>
             <div class="field">
-              <label>锐化强度: {{ exp.sharpenAmount }}%</label>
-              <input type="range" min="0" max="200" step="10" v-model.number="exp.sharpenAmount" />
+              <label>锐化强度</label>
+              <div class="size-control-row">
+                <input type="range" min="0" max="200" step="10" v-model.number="exp.sharpenAmount" />
+                <label class="numeric-value">
+                  <input type="number" min="0" max="200" step="10" v-model.number="exp.sharpenAmount" />
+                  <span>%</span>
+                </label>
+              </div>
             </div>
           </div>
           <div v-if="exportResolutionInfo" class="export-res-info">
@@ -967,10 +1149,66 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
 .section { padding: 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
 .count { background: var(--bg-tertiary); padding: 1px 6px; border-radius: 8px; font-size: 10px; color: var(--text-secondary); }
+.layer-title-actions { display: inline-flex; align-items: center; gap: 6px; }
 .field { margin-bottom: 10px; }
 .field label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
 .field-row { display: flex; gap: 8px; }
 .field-row .field { flex: 1; }
+.size-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  gap: 8px;
+  align-items: center;
+}
+.brush-control-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 64px;
+  gap: 8px;
+  align-items: center;
+}
+.size-control-row input[type="range"] {
+  min-width: 0;
+}
+.brush-control-row input[type="range"] {
+  min-width: 0;
+}
+.field .numeric-value {
+  height: 26px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 0;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.numeric-value input {
+  min-width: 0;
+  width: 100%;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: right;
+  outline: none;
+  font: inherit;
+}
+.numeric-value input::-webkit-outer-spin-button,
+.numeric-value input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.numeric-value span {
+  color: var(--text-muted);
+  user-select: none;
+}
 .readonly-value { padding: 6px 10px; background: var(--bg-primary); border-radius: var(--radius); color: var(--text-muted); font-size: 12px; }
 .radio-group { display: flex; gap: 4px; }
 .radio { flex: 1; display: flex; align-items: center; gap: 4px; font-size: 11px; padding: 5px 8px; border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; border: 1px solid var(--border); }
@@ -981,22 +1219,96 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
 .empty { font-size: 11px; color: var(--text-muted); }
 .export-single-btn { flex: 1; }
 .btn-row { display: flex; gap: 6px; }
-.preview-single-btn { background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); }
+.color-fields-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.color-fields-row.compact {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.color-pick-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.color-pick-btn {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+.pick-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.preview-single-btn { flex: 1; background: var(--bg-primary); color: var(--accent); border: 1px solid var(--accent); }
 .preview-single-btn:hover { opacity: 0.85; }
+.preview-single-btn.cancel-mode {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.preview-single-btn.cancel-mode:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+.preview-single-btn:disabled,
+.export-single-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+  color: var(--text-secondary);
+}
+.preview-single-btn:disabled {
+  background: var(--bg-primary);
+  border-color: var(--border-strong);
+}
+.export-single-btn:disabled {
+  background: var(--bg-tertiary);
+}
 .color-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; padding: 2px; }
+.brush-color-input { width: 36px; }
 .color-input:disabled { opacity: 0.45; cursor: default; }
-.color-process-section { background: rgba(40, 199, 111, 0.025); }
 .color-tool-row,
 .color-action-row {
   display: flex; gap: 6px; margin-bottom: 10px;
 }
 .scope-radio-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .scope-radio-group .radio:has(input:disabled) { opacity: 0.45; cursor: default; }
+.manual-range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) calc((100% - 8px) / 3);
+  gap: 6px;
+  align-items: center;
+  margin: -3px 0 10px;
+}
 .range-readout {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  margin: -3px 0 10px; padding: 6px 8px;
+  min-width: 0; min-height: 32px; padding: 6px 8px;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-primary); color: var(--text-muted); font-size: 11px;
+}
+.range-readout span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.range-select-btn {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
 }
 .inline-clear-btn {
   border: none; background: transparent; color: var(--text-muted);
@@ -1008,12 +1320,6 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
   margin: 2px 0 10px; padding: 8px;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-primary);
-}
-.color-process-message {
-  margin-top: 8px; padding: 7px 8px;
-  border: 1px solid rgba(40, 199, 111, 0.2); border-radius: var(--radius);
-  background: rgba(40, 199, 111, 0.06); color: var(--text-secondary);
-  font-size: 11px; line-height: 1.4;
 }
 .tf-btn.active {
   border-color: rgba(40, 199, 111, 0.52);
@@ -1098,6 +1404,50 @@ function onLayerDrop(e: DragEvent, toIdx: number) {
 .layer-order-btn:disabled { opacity: 0.3; cursor: default; }
 .layer-delete { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 0 3px; border-radius: 3px; }
 .layer-delete:hover { background: rgba(229, 92, 92, 0.2); color: var(--danger); }
+.layer-tool-panel {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.layer-tool-toggle {
+  width: 100%; min-height: 30px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-primary); color: var(--text-secondary);
+  padding: 6px 8px; cursor: pointer; text-align: left;
+}
+.layer-tool-toggle:hover,
+.layer-tool-toggle.expanded {
+  border-color: rgba(40, 199, 111, 0.42);
+  background: rgba(40, 199, 111, 0.06);
+  color: var(--text-primary);
+}
+.tool-toggle-main,
+.tool-toggle-meta {
+  min-width: 0; display: flex; align-items: center; gap: 6px;
+}
+.tool-toggle-main { font-size: 11px; font-weight: 600; }
+.tool-chevron {
+  color: var(--text-muted); font-size: 13px; line-height: 1;
+  transition: transform 0.14s, color 0.14s;
+}
+.layer-tool-toggle.expanded .tool-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.tool-toggle-meta {
+  justify-content: flex-end;
+  max-width: 124px;
+}
+.active-layer-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-muted); font-size: 10px; font-weight: 400;
+}
+.color-process-panel {
+  padding: 10px 8px 0;
+  border-left: 1px solid rgba(40, 199, 111, 0.22);
+  margin-left: 10px;
+}
 .region-delete {
   background: none; border: none; color: var(--text-muted); cursor: pointer;
   font-size: 11px; padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
