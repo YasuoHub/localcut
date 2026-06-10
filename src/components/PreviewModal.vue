@@ -3,6 +3,7 @@ import { ref, nextTick } from 'vue'
 import type { CropRegion } from '../types'
 import { useExport } from '../composables/useExport'
 import { useEditorStore } from '../stores/editor'
+import { expandGridGroup } from '../composables/useGridGroups'
 import ImageZoomModal from './ImageZoomModal.vue'
 
 const editor = useEditorStore()
@@ -10,6 +11,10 @@ const { renderRegionToCanvas } = useExport()
 
 const show = ref(false)
 const previews = ref<{ regionId: string; name: string; dataUrl: string }[]>([])
+const currentRegions = ref<CropRegion[]>([])
+const previewTitle = ref('批量预览')
+const exportButtonLabel = ref('批量导出')
+const showExportButton = ref(true)
 const zoomRegion = ref<CropRegion | null>(null)
 const zoomIndex = ref(0)
 const zoomRegions = ref<CropRegion[]>([])
@@ -17,11 +22,26 @@ const showZoom = ref(false)
 const loading = ref(false)
 const emit = defineEmits<{ export: [] }>()
 
+type PreviewModalOptions = {
+  regions?: CropRegion[]
+  title?: string
+  exportLabel?: string
+  showExport?: boolean
+}
+
 function previewRegions(): CropRegion[] {
-  if (editor.selectedRegionIds.size > 0) {
-    return editor.regions.filter(r => editor.selectedRegionIds.has(r.id))
+  if (editor.selectedRegionIds.size > 0 || editor.selectedGridGroupIds.size > 0) {
+    return [
+      ...editor.regions.filter(r => editor.selectedRegionIds.has(r.id)),
+      ...editor.gridGroups
+        .filter(group => editor.selectedGridGroupIds.has(group.id))
+        .flatMap(group => expandGridGroup(group)),
+    ]
   }
-  return editor.regions
+  return [
+    ...editor.regions,
+    ...editor.gridGroups.flatMap(group => expandGridGroup(group)),
+  ]
 }
 
 async function generateThumb(region: CropRegion): Promise<string> {
@@ -38,8 +58,12 @@ async function generateThumb(region: CropRegion): Promise<string> {
   return canvas.toDataURL('image/png')
 }
 
-async function open() {
-  const regions = previewRegions()
+async function open(options: PreviewModalOptions = {}) {
+  const regions = options.regions ?? previewRegions()
+  currentRegions.value = regions
+  previewTitle.value = options.title ?? '批量预览'
+  exportButtonLabel.value = options.exportLabel ?? '批量导出'
+  showExportButton.value = options.showExport ?? true
   loading.value = true
   previews.value = []
   show.value = true
@@ -55,12 +79,15 @@ async function open() {
   } finally { loading.value = false }
 }
 
-function close() { show.value = false }
+function close() {
+  show.value = false
+  currentRegions.value = []
+}
 
 function openZoom(regionId: string) {
-  const region = editor.regions.find(r => r.id === regionId)
+  const allRegions = currentRegions.value
+  const region = allRegions.find(r => r.id === regionId)
   if (region) {
-    const allRegions = previewRegions()
     const idx = allRegions.findIndex(r => r.id === regionId)
     zoomRegions.value = allRegions
     zoomIndex.value = idx >= 0 ? idx : 0
@@ -88,7 +115,7 @@ defineExpose({ open, close })
     <div v-if="show" class="preview-overlay">
       <div class="preview-panel" @click.stop>
         <div class="preview-header">
-          <span class="preview-title">批量预览 ({{ previews.length }} 项)</span>
+          <span class="preview-title">{{ previewTitle }} ({{ previews.length }} 项)</span>
           <button class="preview-close" @click="close">&times;</button>
         </div>
 
@@ -109,7 +136,7 @@ defineExpose({ open, close })
 
         <div class="preview-footer">
           <button class="btn-secondary" @click="close">关闭</button>
-          <button class="btn-primary" @click="handleBatchExport">批量导出</button>
+          <button v-if="showExportButton" class="btn-primary" @click="handleBatchExport">{{ exportButtonLabel }}</button>
         </div>
       </div>
     </div>

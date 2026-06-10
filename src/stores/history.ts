@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { CropRegion, TextAnnotation, ImageLayer } from '../types'
+import type { CropGridGroup, CropRegion, TextAnnotation, ImageLayer } from '../types'
 import { useEditorStore } from './editor'
 
 interface LayerState {
@@ -11,7 +11,11 @@ interface LayerState {
 
 interface Snapshot {
   regions: CropRegion[]
+  gridGroups: CropGridGroup[]
   selectedRegionId: string | null
+  selectedGridGroupId: string | null
+  selectedRegionIds: string[]
+  selectedGridGroupIds: string[]
   textAnnotations: TextAnnotation[]
   selectedTextId: string | null
   layerStates: LayerState[]
@@ -28,6 +32,9 @@ export const useHistoryStore = defineStore('history', () => {
 
   function deepCloneRegions(list: CropRegion[]): CropRegion[] {
     return list.map(r => ({ ...r, points: r.points ? r.points.map(p => ({ ...p })) : undefined }))
+  }
+  function deepCloneGridGroups(list: CropGridGroup[]): CropGridGroup[] {
+    return list.map(g => ({ ...g }))
   }
   function deepCloneTexts(list: TextAnnotation[]): TextAnnotation[] {
     return list.map(t => ({ ...t }))
@@ -67,7 +74,11 @@ export const useHistoryStore = defineStore('history', () => {
     const editor = useEditorStore()
     undoStack.value.push({
       regions: deepCloneRegions(editor.regions),
+      gridGroups: deepCloneGridGroups(editor.gridGroups),
       selectedRegionId: editor.selectedRegionId,
+      selectedGridGroupId: editor.selectedGridGroupId,
+      selectedRegionIds: [...editor.selectedRegionIds],
+      selectedGridGroupIds: [...editor.selectedGridGroupIds],
       textAnnotations: deepCloneTexts(editor.textAnnotations),
       selectedTextId: editor.selectedTextId,
       layerStates: snapshotLayerStates(),
@@ -80,7 +91,11 @@ export const useHistoryStore = defineStore('history', () => {
   function applySnapshot(s: Snapshot) {
     const editor = useEditorStore()
     editor.regions.splice(0, editor.regions.length, ...deepCloneRegions(s.regions))
+    editor.gridGroups.splice(0, editor.gridGroups.length, ...deepCloneGridGroups(s.gridGroups ?? []))
     editor.selectedRegionId = s.selectedRegionId
+    editor.selectedGridGroupId = s.selectedGridGroupId ?? null
+    editor.selectedRegionIds = new Set(s.selectedRegionIds ?? [])
+    editor.selectedGridGroupIds = new Set(s.selectedGridGroupIds ?? [])
     editor.textAnnotations.splice(0, editor.textAnnotations.length, ...deepCloneTexts(s.textAnnotations))
     editor.selectedTextId = s.selectedTextId
     restoreLayerStates(s.layerStates)
@@ -94,7 +109,11 @@ export const useHistoryStore = defineStore('history', () => {
     try {
       redoStack.value.push({
         regions: deepCloneRegions(editor.regions),
+        gridGroups: deepCloneGridGroups(editor.gridGroups),
         selectedRegionId: editor.selectedRegionId,
+        selectedGridGroupId: editor.selectedGridGroupId,
+        selectedRegionIds: [...editor.selectedRegionIds],
+        selectedGridGroupIds: [...editor.selectedGridGroupIds],
         textAnnotations: deepCloneTexts(editor.textAnnotations),
         selectedTextId: editor.selectedTextId,
         layerStates: snapshotLayerStates(),
@@ -114,7 +133,11 @@ export const useHistoryStore = defineStore('history', () => {
     try {
       undoStack.value.push({
         regions: deepCloneRegions(editor.regions),
+        gridGroups: deepCloneGridGroups(editor.gridGroups),
         selectedRegionId: editor.selectedRegionId,
+        selectedGridGroupId: editor.selectedGridGroupId,
+        selectedRegionIds: [...editor.selectedRegionIds],
+        selectedGridGroupIds: [...editor.selectedGridGroupIds],
         textAnnotations: deepCloneTexts(editor.textAnnotations),
         selectedTextId: editor.selectedTextId,
         layerStates: snapshotLayerStates(),

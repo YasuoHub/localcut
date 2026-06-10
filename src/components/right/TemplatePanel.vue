@@ -58,7 +58,7 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const renamingId = ref<string | null>(null)
 const renameValue = ref('')
 
-const canSave = computed(() => Boolean(editor.activeLayer && editor.regions.length > 0 && saveName.value.trim()))
+const canSave = computed(() => Boolean(editor.activeLayer && (editor.regions.length > 0 || editor.gridGroups.length > 0) && saveName.value.trim()))
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === selectedTplId.value) ?? null)
 
@@ -80,7 +80,7 @@ const exportSelectionCount = computed(() => selectedExportIds.value.size)
 function handleSave() {
   if (!canSave.value) return
   const exportSettings = exp.createTemplateExportSettings(saveExportOptions.value)
-  const tpl = saveTemplate(saveName.value.trim(), editor.regions, editor.activeLayer!, {
+  const tpl = saveTemplate(saveName.value.trim(), editor.regions, editor.gridGroups, editor.activeLayer!, {
     category: saveCategory.value,
     exportSettings: Object.keys(exportSettings).length > 0 ? exportSettings : undefined,
   })
@@ -92,8 +92,9 @@ function handleApply() {
   if (!selectedTplId.value || !editor.activeLayer) return
   const tpl = selectedTemplate.value
   history.snapshot()
-  const regions = applyTemplate(selectedTplId.value, editor.activeLayer)
-  editor.regions.push(...regions)
+  const result = applyTemplate(selectedTplId.value, editor.activeLayer)
+  editor.regions.push(...result.regions)
+  editor.gridGroups.push(...result.gridGroups)
   editor.invalidateCanvas()
   if (applyMode.value === 'full' && tpl?.exportSettings) {
     exp.applyTemplateExportSettings(tpl.exportSettings)

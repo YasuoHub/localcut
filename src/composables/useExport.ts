@@ -1,9 +1,10 @@
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
-import type { CropRegion, TextAnnotation, ImageFormat, ImageLayer, ExportNamingOptions, BatchOutputFitMode } from '../types'
+import type { CropGridGroup, CropRegion, TextAnnotation, ImageFormat, ImageLayer, ExportNamingOptions, BatchOutputFitMode } from '../types'
 import { drawShapePath } from './shapeUtils'
 import { makeExportFilename, makeFilenameContext } from './useFilenamePattern'
 import { fitCanvasToSize } from './useExportFit'
+import { expandGridGroup } from './useGridGroups'
 
 import { unsharpMask } from '../utils/imageSharpen'
 
@@ -265,9 +266,83 @@ export function useExport() {
     })
   }
 
-  async function exportRegions(
-    layers: ImageLayer[],
+  function copyLayerToCanvas(layer: ImageLayer, showOriginal: boolean): HTMLCanvasElement {
+    const source = (showOriginal || !layer.workingCanvas) ? layer.image : layer.workingCanvas
+    const canvas = document.createElement('canvas')
+    canvas.width = layer.image.naturalWidth
+    canvas.height = layer.image.naturalHeight
+    const ctx = canvas.getContext('2d')!
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height)
+    return canvas
+  }
+
+  async function renderLayerToCanvas(
+    layer: ImageLayer,
+    outputWidth: number | null,
+    outputHeight: number | null,
+    dpr: number,
+    showOriginal: boolean,
+    batchFit?: BatchOutputFitMode,
+    batchFill?: string,
+    upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
+    sharpenAmount?: number,
+  ): Promise<HTMLCanvasElement> {
+    let logicalCanvas = copyLayerToCanvas(layer, showOriginal)
+    let outLw = outputWidth ?? logicalCanvas.width
+    let outLh = outputHeight ?? logicalCanvas.height
+    const doFit = batchFit && batchFit !== 'original' && outputWidth && outputHeight
+
+    if (doFit) {
+      logicalCanvas = fitCanvasToSize(logicalCanvas, outLw, outLh, batchFit, batchFill ?? '#ffffff')
+    } else if (outputWidth && outputHeight && (outputWidth !== logicalCanvas.width || outputHeight !== logicalCanvas.height)) {
+      const resized = document.createElement('canvas')
+      resized.width = outputWidth
+      resized.height = outputHeight
+      const rctx = resized.getContext('2d')!
+      rctx.imageSmoothingEnabled = true
+      rctx.imageSmoothingQuality = 'high'
+      rctx.drawImage(logicalCanvas, 0, 0, outputWidth, outputHeight)
+      logicalCanvas = resized
+    } else {
+      outLw = logicalCanvas.width
+      outLh = logicalCanvas.height
+    }
+
+    if (upscaleFn) {
+      logicalCanvas = await upscaleFn(logicalCanvas)
+      outLw = logicalCanvas.width
+      outLh = logicalCanvas.height
+    }
+
+    if (sharpenAmount && sharpenAmount > 0) {
+      const ctx = logicalCanvas.getContext('2d')!
+      const imgData = ctx.getImageData(0, 0, outLw, outLh)
+      const sharpened = unsharpMask(imgData, sharpenAmount / 100, 2, 2)
+      logicalCanvas = document.createElement('canvas')
+      logicalCanvas.width = outLw
+      logicalCanvas.height = outLh
+      logicalCanvas.getContext('2d')!.putImageData(sharpened, 0, 0)
+    }
+
+    const pw = Math.round(outLw * dpr)
+    const ph = Math.round(outLh * dpr)
+    const result = document.createElement('canvas')
+    result.width = pw
+    result.height = ph
+    const rctx = result.getContext('2d')!
+    rctx.imageSmoothingEnabled = true
+    rctx.imageSmoothingQuality = 'high'
+    rctx.drawImage(logicalCanvas, 0, 0, pw, ph)
+    return result
+  }
+
+  async function addRegionsToZip(
+    zip: JSZip,
     regions: CropRegion[],
+    usedNames: Set<string>,
+    layers: ImageLayer[],
     format: ImageFormat,
     quality: number,
     dpr: number,
@@ -280,11 +355,8 @@ export function useExport() {
     batchFill?: string,
     upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
     sharpenAmount?: number,
-  ): Promise<Blob> {
-    const zip = new JSZip()
-    const usedNames = new Set<string>()
+  ) {
     const ext = format === 'jpeg' ? 'jpg' : format
-
     for (let i = 0; i < regions.length; i++) {
       const region = regions[i]
 
@@ -303,6 +375,8 @@ export function useExport() {
 
       let blob = await canvasToBlob(canvas, format, quality)
       if (format === 'png') blob = await injectPngDpi(blob, 72)
+      canvas.width = 0
+      canvas.height = 0
 
       let filename: string
       if (namingOptions) {
@@ -321,6 +395,110 @@ export function useExport() {
       }
       zip.file(filename, blob)
     }
+  }
+
+  async function exportRegions(
+    layers: ImageLayer[],
+    regions: CropRegion[],
+    format: ImageFormat,
+    quality: number,
+    dpr: number,
+    showOriginal: boolean,
+    textAnnotations?: TextAnnotation[],
+    namingOptions?: ExportNamingOptions,
+    batchWidth?: number | null,
+    batchHeight?: number | null,
+    batchFit?: BatchOutputFitMode,
+    batchFill?: string,
+    upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
+    sharpenAmount?: number,
+  ): Promise<Blob> {
+    const zip = new JSZip()
+    const usedNames = new Set<string>()
+    await addRegionsToZip(
+      zip, regions, usedNames,
+      layers, format, quality, dpr, showOriginal, textAnnotations,
+      namingOptions, batchWidth, batchHeight, batchFit, batchFill, upscaleFn, sharpenAmount,
+    )
+    return zip.generateAsync({ type: 'blob' })
+  }
+
+  async function exportGridGroup(
+    layers: ImageLayer[],
+    group: CropGridGroup,
+    format: ImageFormat,
+    quality: number,
+    dpr: number,
+    showOriginal: boolean,
+    textAnnotations?: TextAnnotation[],
+    namingOptions?: ExportNamingOptions,
+    batchWidth?: number | null,
+    batchHeight?: number | null,
+    batchFit?: BatchOutputFitMode,
+    batchFill?: string,
+    upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
+    sharpenAmount?: number,
+  ): Promise<Blob> {
+    const cells = expandGridGroup(group)
+    return exportRegions(
+      layers, cells,
+      format, quality, dpr, showOriginal, textAnnotations,
+      namingOptions,
+      batchWidth, batchHeight, batchFit, batchFill,
+      upscaleFn, sharpenAmount,
+    )
+  }
+
+  async function exportRegionsAndGridGroups(
+    layers: ImageLayer[],
+    regions: CropRegion[],
+    gridGroups: CropGridGroup[],
+    format: ImageFormat,
+    quality: number,
+    dpr: number,
+    showOriginal: boolean,
+    textAnnotations?: TextAnnotation[],
+    namingOptions?: ExportNamingOptions,
+    batchWidth?: number | null,
+    batchHeight?: number | null,
+    batchFit?: BatchOutputFitMode,
+    batchFill?: string,
+    upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
+    sharpenAmount?: number,
+  ): Promise<Blob> {
+    const zip = new JSZip()
+    const usedNames = new Set<string>()
+    await addRegionsToZip(
+      zip, regions, usedNames,
+      layers, format, quality, dpr, showOriginal, textAnnotations,
+      namingOptions, batchWidth, batchHeight, batchFit, batchFill, upscaleFn, sharpenAmount,
+    )
+
+    const groupZipNames = new Set<string>()
+    const outerIndexOffset = regions.length
+    for (let i = 0; i < gridGroups.length; i++) {
+      const group = gridGroups[i]
+      const cells = expandGridGroup(group)
+      const cellIndexById = Object.fromEntries(cells.map((cell, index) => [cell.id, index + 1]))
+      const groupZip = await exportRegions(
+        layers, cells,
+        format, quality, dpr, showOriginal, textAnnotations,
+        namingOptions ? { ...namingOptions, regionIndexById: cellIndexById } : undefined,
+        batchWidth, batchHeight, batchFit, batchFill,
+        upscaleFn, sharpenAmount,
+      )
+      const ctx = makeFilenameContext(
+        namingOptions?.imageName ?? '',
+        group.name,
+        outerIndexOffset + i + 1,
+        Math.round(group.width),
+        Math.round(group.height),
+        'zip',
+      )
+      const filename = makeExportFilename(namingOptions?.pattern ?? '{regionName}', ctx, 'zip', groupZipNames)
+      zip.file(filename, groupZip)
+    }
+
     return zip.generateAsync({ type: 'blob' })
   }
 
@@ -341,6 +519,8 @@ export function useExport() {
     const canvas = await renderRegionToCanvas(layers, region, outputWidth, outputHeight, dpr, showOriginal, textAnnotations, undefined, undefined, upscaleFn, sharpenAmount)
     let blob = await canvasToBlob(canvas, format, quality)
     if (format === 'png') blob = await injectPngDpi(blob, 72)
+    canvas.width = 0
+    canvas.height = 0
     const ext = format === 'jpeg' ? 'jpg' : format
     const index = namingOptions?.index ?? namingOptions?.regionIndexById?.[region.id] ?? 1
     const outW = outputWidth ?? region.width
@@ -350,7 +530,35 @@ export function useExport() {
     saveAs(blob, filename)
   }
 
+  async function exportSingleLayer(
+    layer: ImageLayer,
+    format: ImageFormat,
+    quality: number,
+    outputWidth: number | null,
+    outputHeight: number | null,
+    dpr: number,
+    showOriginal: boolean,
+    batchFit?: BatchOutputFitMode,
+    batchFill?: string,
+    upscaleFn?: (canvas: HTMLCanvasElement) => Promise<HTMLCanvasElement>,
+    sharpenAmount?: number,
+    namingOptions?: ExportNamingOptions & { index?: number },
+  ) {
+    const canvas = await renderLayerToCanvas(layer, outputWidth, outputHeight, dpr, showOriginal, batchFit, batchFill, upscaleFn, sharpenAmount)
+    let blob = await canvasToBlob(canvas, format, quality)
+    if (format === 'png') blob = await injectPngDpi(blob, 72)
+    canvas.width = 0
+    canvas.height = 0
+    const ext = format === 'jpeg' ? 'jpg' : format
+    const index = namingOptions?.index ?? 1
+    const outW = outputWidth ?? layer.image.naturalWidth
+    const outH = outputHeight ?? layer.image.naturalHeight
+    const ctx = makeFilenameContext(namingOptions?.imageName ?? '', layer.name, index, Math.round(outW), Math.round(outH), ext)
+    const filename = makeExportFilename(namingOptions?.pattern ?? '{regionName}', ctx, ext)
+    saveAs(blob, filename)
+  }
+
   function downloadZip(blob: Blob, filename = 'output.zip') { saveAs(blob, filename) }
 
-  return { exportRegions, exportSingleRegion, downloadZip, renderRegionToCanvas, computeSourcePixelRatio }
+  return { exportRegions, exportGridGroup, exportRegionsAndGridGroups, exportSingleRegion, exportSingleLayer, downloadZip, renderRegionToCanvas, renderLayerToCanvas, computeSourcePixelRatio }
 }

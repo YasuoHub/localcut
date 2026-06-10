@@ -4,9 +4,11 @@ import type {
   CropTemplateBundle,
   CropTemplateCategory,
   CropTemplateExportSettings,
+  CropTemplateGridGroup,
   CropTemplateImportIssue,
   CropTemplateImportResult,
   CropTemplateRegion,
+  CropGridGroup,
   CropTemplateSaveOptions,
   CropRegion,
   ImageLayer,
@@ -108,10 +110,39 @@ function normalizeRegion(value: unknown): CropTemplateRegion | null {
   return region
 }
 
+function normalizeGridGroup(value: unknown): CropTemplateGridGroup | null {
+  if (!isObject(value)) return null
+  if (
+    typeof value.name !== 'string' ||
+    typeof value.xRatio !== 'number' ||
+    typeof value.yRatio !== 'number' ||
+    typeof value.widthRatio !== 'number' ||
+    typeof value.heightRatio !== 'number' ||
+    typeof value.rows !== 'number' ||
+    typeof value.cols !== 'number'
+  ) {
+    return null
+  }
+
+  return {
+    name: value.name,
+    xRatio: value.xRatio,
+    yRatio: value.yRatio,
+    widthRatio: value.widthRatio,
+    heightRatio: value.heightRatio,
+    rows: Math.max(1, Math.round(value.rows)),
+    cols: Math.max(1, Math.round(value.cols)),
+    gapXRatio: typeof value.gapXRatio === 'number' ? value.gapXRatio : 0,
+    gapYRatio: typeof value.gapYRatio === 'number' ? value.gapYRatio : 0,
+    borderRadiusRatio: typeof value.borderRadiusRatio === 'number' ? value.borderRadiusRatio : 0,
+  }
+}
+
 function normalizeTemplate(value: unknown, options: { suffix?: number } = {}): CropTemplate | null {
   if (!isObject(value)) return null
   const regions = Array.isArray(value.regions) ? value.regions.map(normalizeRegion).filter((item): item is CropTemplateRegion => Boolean(item)) : []
-  if (!regions.length) return null
+  const gridGroups = Array.isArray(value.gridGroups) ? value.gridGroups.map(normalizeGridGroup).filter((item): item is CropTemplateGridGroup => Boolean(item)) : []
+  if (!regions.length && !gridGroups.length) return null
 
   const now = Date.now()
   const name = typeof value.name === 'string' && value.name.trim()
@@ -142,6 +173,7 @@ function normalizeTemplate(value: unknown, options: { suffix?: number } = {}): C
     lastUsedAt: typeof value.lastUsedAt === 'number' ? value.lastUsedAt : undefined,
     baseRect,
     regions,
+    gridGroups,
     exportSettings: normalizeExportSettings(value.exportSettings),
   }
 }
@@ -206,6 +238,7 @@ export function useCropTemplates() {
   function saveTemplate(
     name: string,
     regions: CropRegion[],
+    gridGroups: CropGridGroup[],
     layer: ImageLayer,
     options: CropTemplateSaveOptions,
   ): CropTemplate {
@@ -231,6 +264,19 @@ export function useCropTemplates() {
       return tr
     })
 
+    const templateGridGroups: CropTemplateGridGroup[] = gridGroups.map(group => ({
+      name: group.name,
+      xRatio: (group.x - baseRect.x) / baseRect.width,
+      yRatio: (group.y - baseRect.y) / baseRect.height,
+      widthRatio: group.width / baseRect.width,
+      heightRatio: group.height / baseRect.height,
+      rows: group.rows,
+      cols: group.cols,
+      gapXRatio: group.gapX / baseRect.width,
+      gapYRatio: group.gapY / baseRect.height,
+      borderRadiusRatio: group.borderRadius / Math.min(group.width, group.height),
+    }))
+
     const now = Date.now()
     const tpl: CropTemplate = {
       id: createId(),
@@ -242,6 +288,7 @@ export function useCropTemplates() {
       updatedAt: now,
       baseRect: { ...baseRect },
       regions: templateRegions,
+      gridGroups: templateGridGroups,
       exportSettings: options.exportSettings,
     }
     templates.value.push(tpl)
@@ -249,16 +296,16 @@ export function useCropTemplates() {
     return tpl
   }
 
-  function applyTemplate(templateId: string, layer: ImageLayer): CropRegion[] {
+  function applyTemplate(templateId: string, layer: ImageLayer): { regions: CropRegion[]; gridGroups: CropGridGroup[] } {
     const tpl = templates.value.find(t => t.id === templateId)
-    if (!tpl) return []
+    if (!tpl) return { regions: [], gridGroups: [] }
 
     tpl.lastUsedAt = Date.now()
     persist()
 
     const targetRect = getActiveLayerDisplayRect(layer)
 
-    return tpl.regions.map(tr => {
+    const regions = tpl.regions.map(tr => {
       const width = tr.widthRatio * targetRect.width
       const height = tr.heightRatio * targetRect.height
       const region: CropRegion = {
@@ -281,6 +328,22 @@ export function useCropTemplates() {
       }
       return region
     })
+
+    const gridGroups = (tpl.gridGroups ?? []).map(group => ({
+      id: createId('tpl_grid_group'),
+      name: group.name,
+      x: targetRect.x + group.xRatio * targetRect.width,
+      y: targetRect.y + group.yRatio * targetRect.height,
+      width: group.widthRatio * targetRect.width,
+      height: group.heightRatio * targetRect.height,
+      rows: group.rows,
+      cols: group.cols,
+      gapX: group.gapXRatio * targetRect.width,
+      gapY: group.gapYRatio * targetRect.height,
+      borderRadius: group.borderRadiusRatio * Math.min(group.widthRatio * targetRect.width, group.heightRatio * targetRect.height),
+    }))
+
+    return { regions, gridGroups }
   }
 
   function deleteTemplate(id: string) {

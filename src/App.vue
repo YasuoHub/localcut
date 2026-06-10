@@ -5,16 +5,25 @@ import LeftSidebar from './components/LeftSidebar.vue'
 import CanvasWorkspace from './components/CanvasWorkspace.vue'
 import RightSidebar from './components/RightSidebar.vue'
 import DeliveryBar from './components/DeliveryBar.vue'
+import ImageCompressModal from './components/ImageCompressModal.vue'
 import MattingWorkspace from './components/matting/MattingWorkspace.vue'
 import { useEditorStore } from './stores/editor'
 import { useHistoryStore } from './stores/history'
 import { useMattingStore } from './stores/matting'
+import {
+  buildImportFeedback,
+  getEditorLayerPixels,
+  loadImageFromFile,
+  validateEditorImageFiles,
+  validateImageBeforeLayerAdd,
+} from './utils/editorImageImport'
 
 const editor = useEditorStore()
 const history = useHistoryStore()
 const matting = useMattingStore()
 const canvasWorkspace = ref<InstanceType<typeof CanvasWorkspace> | null>(null)
 const mattingWorkspace = ref<InstanceType<typeof MattingWorkspace> | null>(null)
+const showImageCompressModal = ref(false)
 let removeOpenFilesListener: (() => void) | undefined
 let removeMenuCommandListener: (() => void) | undefined
 
@@ -24,20 +33,43 @@ type ElectronMenuCommand = 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'select-
 function addImageLayerFromDataUrl(dataUrl: string, name?: string) {
   const img = new Image()
   img.onload = () => {
+    const check = validateImageBeforeLayerAdd(img, getEditorLayerPixels(editor.layers), name)
+    if (!check.ok) {
+      window.alert(check.message)
+      return
+    }
+    if (check.message) window.alert(check.message)
     editor.addLayer(img, name)
     canvasWorkspace.value?.fitToCanvas()
   }
   img.src = dataUrl
 }
 
-function handleUploadImage(files: File[]) {
-  for (const file of files) {
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      addImageLayerFromDataUrl(ev.target?.result as string, file.name)
+async function handleUploadImage(files: File[]) {
+  const check = validateEditorImageFiles(files, editor.layers.length)
+  const rejected = [...check.rejected]
+  const warnings = [...check.warnings]
+  let addedCount = 0
+
+  for (const file of check.accepted) {
+    try {
+      const img = await loadImageFromFile(file)
+      const layerCheck = validateImageBeforeLayerAdd(img, getEditorLayerPixels(editor.layers), file.name)
+      if (!layerCheck.ok) {
+        rejected.push(layerCheck.message)
+        continue
+      }
+      if (layerCheck.message) warnings.push(layerCheck.message)
+      editor.addLayer(img, file.name)
+      addedCount++
+    } catch (err) {
+      rejected.push(err instanceof Error ? err.message : `${file.name}: 图片解码失败`)
     }
-    reader.readAsDataURL(file)
   }
+  if (addedCount > 0) canvasWorkspace.value?.fitToCanvas()
+
+  const feedback = buildImportFeedback(rejected, [...new Set(warnings)])
+  if (feedback) window.alert(feedback)
 }
 
 function getFocusedEditable(): HTMLInputElement | HTMLTextAreaElement | HTMLElement | null {
@@ -77,16 +109,23 @@ async function runNativeEditCommand(command: ElectronMenuCommand, el: HTMLInputE
 
 function selectAllCanvasRegions() {
   editor.selectedRegionIds = new Set(editor.regions.map(r => r.id))
+  editor.selectedGridGroupIds = new Set(editor.gridGroups.map(g => g.id))
   editor.selectedRegionId = editor.regions[0]?.id ?? null
+  editor.selectedGridGroupId = editor.gridGroups[0]?.id ?? null
   editor.selectedTextId = null
   canvasWorkspace.value?.scheduleRender()
 }
 
 function deleteSelectedCanvasObject() {
-  if (editor.selectedRegionIds.size > 0) {
+  if (editor.selectedRegionIds.size > 0 || editor.selectedGridGroupIds.size > 0) {
     history.snapshot()
     for (const id of [...editor.selectedRegionIds]) editor.deleteRegion(id)
+    for (const id of [...editor.selectedGridGroupIds]) editor.deleteGridGroup(id)
     canvasWorkspace.value?.scheduleRender()
+    return
+  }
+  if (editor.selectedGridGroupId) {
+    canvasWorkspace.value?.deleteGridGroup(editor.selectedGridGroupId)
     return
   }
   if (editor.selectedRegionId) {
@@ -158,20 +197,24 @@ function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !isInput) { canvasWorkspace.value?.finalizeCustomPolygon?.() }
   if ((e.key === 'Delete' || e.key === 'Backspace') && !isInput) {
     // batch delete if multi-select has items
-    if (editor.selectedRegionIds.size > 0) {
+    if (editor.selectedRegionIds.size > 0 || editor.selectedGridGroupIds.size > 0) {
       history.snapshot()
       const ids = [...editor.selectedRegionIds]
       for (const id of ids) {
         editor.deleteRegion(id)
       }
+      for (const id of [...editor.selectedGridGroupIds]) {
+        editor.deleteGridGroup(id)
+      }
       canvasWorkspace.value?.scheduleRender()
     } else {
       const sel = editor.selectedRegionId
       if (sel) canvasWorkspace.value?.deleteRegion(sel)
+      else if (editor.selectedGridGroupId) canvasWorkspace.value?.deleteGridGroup(editor.selectedGridGroupId)
     }
   }
   // arrow key nudge
-  if (!isInput && (editor.selectedRegionId || editor.selectedRegionIds.size > 0)) {
+  if (!isInput && (editor.selectedRegionId || editor.selectedGridGroupId || editor.selectedRegionIds.size > 0 || editor.selectedGridGroupIds.size > 0)) {
     const step = e.shiftKey ? 10 : 1
     let dx = 0, dy = 0
     if (e.key === 'ArrowLeft') dx = -step
@@ -182,7 +225,7 @@ function handleKeyDown(e: KeyboardEvent) {
       e.preventDefault()
       history.snapshot()
       // multi-select nudge
-      if (editor.selectedRegionIds.size > 0) {
+      if (editor.selectedRegionIds.size > 0 || editor.selectedGridGroupIds.size > 0) {
         for (const id of editor.selectedRegionIds) {
           const r = editor.regions.find(r => r.id === id)
           if (r) {
@@ -192,9 +235,16 @@ function handleKeyDown(e: KeyboardEvent) {
             }
           }
         }
+        for (const id of editor.selectedGridGroupIds) {
+          const g = editor.gridGroups.find(g => g.id === id)
+          if (g) { g.x += dx; g.y += dy }
+        }
       } else {
+        const g = editor.gridGroups.find(g => g.id === editor.selectedGridGroupId)
         const r = editor.regions.find(r => r.id === editor.selectedRegionId)
-        if (r) {
+        if (g) {
+          g.x += dx; g.y += dy
+        } else if (r) {
           r.x += dx; r.y += dy
           if (r.points) {
             for (const p of r.points) { p.x += dx; p.y += dy }
@@ -224,11 +274,17 @@ onBeforeUnmount(() => {
   <div class="app-shell">
     <TopBar />
     <div class="app-body">
-      <LeftSidebar @upload-image="handleUploadImage" @open-matting="mattingWorkspace?.open()" />
+      <LeftSidebar
+        @upload-image="handleUploadImage"
+        @open-compress="showImageCompressModal = true"
+        @open-matting="mattingWorkspace?.open()"
+        @create-grid-group="canvasWorkspace?.createDefaultNGrid()"
+      />
       <CanvasWorkspace ref="canvasWorkspace" />
       <RightSidebar />
     </div>
     <DeliveryBar />
+    <ImageCompressModal v-model:show="showImageCompressModal" />
     <MattingWorkspace ref="mattingWorkspace" />
   </div>
 </template>

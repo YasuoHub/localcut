@@ -5,6 +5,7 @@ import type {
   ColorProcessRect,
   ColorProcessScope,
   CropRegion,
+  CropGridGroup,
   TextAnnotation,
   ToolType,
   BrushSettings,
@@ -121,8 +122,11 @@ export const useEditorStore = defineStore('editor', () => {
 
   // ---- regions ----
   const regions = ref<CropRegion[]>([])
+  const gridGroups = ref<CropGridGroup[]>([])
   const selectedRegionId = ref<string | null>(null)
+  const selectedGridGroupId = ref<string | null>(null)
   const selectedRegionIds = ref<Set<string>>(new Set())
+  const selectedGridGroupIds = ref<Set<string>>(new Set())
   const selectedLayerIds = ref<Set<string>>(new Set())
 
   const selectedRegion = computed<CropRegion | null>(() => {
@@ -130,15 +134,38 @@ export const useEditorStore = defineStore('editor', () => {
     return regions.value.find(r => r.id === selectedRegionId.value) ?? null
   })
 
+  const selectedGridGroup = computed<CropGridGroup | null>(() => {
+    if (!selectedGridGroupId.value) return null
+    return gridGroups.value.find(g => g.id === selectedGridGroupId.value) ?? null
+  })
+
   function selectRegion(id: string | null) {
     selectedRegionId.value = id
-    if (id) selectedTextId.value = null
+    if (id) {
+      selectedTextId.value = null
+      selectedGridGroupId.value = null
+    }
+  }
+
+  function selectGridGroup(id: string | null) {
+    selectedGridGroupId.value = id
+    if (id) {
+      selectedRegionId.value = null
+      selectedRegionIds.value = new Set()
+      selectedTextId.value = null
+    }
   }
 
   function toggleRegionCheck(id: string) {
     const newSet = new Set(selectedRegionIds.value)
     if (newSet.has(id)) { newSet.delete(id) } else { newSet.add(id) }
     selectedRegionIds.value = newSet
+  }
+
+  function toggleGridGroupCheck(id: string) {
+    const newSet = new Set(selectedGridGroupIds.value)
+    if (newSet.has(id)) { newSet.delete(id) } else { newSet.add(id) }
+    selectedGridGroupIds.value = newSet
   }
 
   function deleteRegion(id: string) {
@@ -150,10 +177,22 @@ export const useEditorStore = defineStore('editor', () => {
     selectedRegionIds.value = newSet
   }
 
+  function deleteGridGroup(id: string) {
+    const idx = gridGroups.value.findIndex(g => g.id === id)
+    if (idx !== -1) gridGroups.value.splice(idx, 1)
+    if (selectedGridGroupId.value === id) selectedGridGroupId.value = null
+    const newSet = new Set(selectedGridGroupIds.value)
+    newSet.delete(id)
+    selectedGridGroupIds.value = newSet
+  }
+
   function clearRegions() {
     regions.value.splice(0)
+    gridGroups.value.splice(0)
     selectedRegionId.value = null
+    selectedGridGroupId.value = null
     selectedRegionIds.value = new Set()
+    selectedGridGroupIds.value = new Set()
   }
 
   function toggleLayerCheck(id: string) {
@@ -181,7 +220,10 @@ export const useEditorStore = defineStore('editor', () => {
 
   function selectText(id: string | null) {
     selectedTextId.value = id
-    if (id) selectedRegionId.value = null
+    if (id) {
+      selectedRegionId.value = null
+      selectedGridGroupId.value = null
+    }
   }
 
   function deleteText(id: string) {
@@ -331,8 +373,8 @@ export const useEditorStore = defineStore('editor', () => {
   return {
     layers, activeLayerId, activeLayer, imageLoaded,
     addLayer, removeLayer, clearLayers, setActiveLayer, renameLayer, moveLayer, moveLayerUp, moveLayerDown, toggleLayerVisible,
-    regions, selectedRegionId, selectedRegionIds, selectedRegion,
-    selectRegion, toggleRegionCheck, deleteRegion, clearRegions,
+    regions, gridGroups, selectedRegionId, selectedGridGroupId, selectedRegionIds, selectedGridGroupIds, selectedRegion, selectedGridGroup,
+    selectRegion, selectGridGroup, toggleRegionCheck, toggleGridGroupCheck, deleteRegion, deleteGridGroup, clearRegions,
     selectedLayerIds, toggleLayerCheck, clearSelectedLayers,
     textAnnotations, selectedTextId, selectedText,
     selectText, deleteText,

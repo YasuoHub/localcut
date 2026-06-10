@@ -7,6 +7,14 @@ import { useCanvasEngine } from '../composables/useCanvasEngine'
 import { useEditorStore } from '../stores/editor'
 import { useHistoryStore } from '../stores/history'
 import { nextRegionName } from '../composables/shapeUtils'
+import { createDefaultGridGroup } from '../composables/useGridGroups'
+import {
+  buildImportFeedback,
+  getEditorLayerPixels,
+  loadImageFromFile,
+  validateEditorImageFiles,
+  validateImageBeforeLayerAdd,
+} from '../utils/editorImageImport'
 import type { CropRegion } from '../types'
 
 const containerRef = ref<HTMLElement | null>(null)
@@ -17,7 +25,7 @@ const vrulerRef = ref<HTMLCanvasElement | null>(null)
 const editor = useEditorStore()
 const history = useHistoryStore()
 const {
-  regions, selectedRegionId, selectedRegionIds, activeTool,
+  regions, gridGroups, selectedRegionId, selectedGridGroupId, selectedRegionIds, selectedGridGroupIds, activeTool,
   brushSettings, eraserSettings,
   textAnnotations, selectedTextId,
   constrainToImage, isSingleLayerMode, magicWandTolerance, showOriginal,
@@ -27,7 +35,7 @@ const {
 
 const engine = useCanvasEngine(
   canvasRef, containerRef,
-  regions.value, selectedRegionId, selectedRegionIds,
+  regions.value, gridGroups.value, selectedRegionId, selectedGridGroupId, selectedRegionIds, selectedGridGroupIds,
   activeTool,
   brushSettings, eraserSettings,
   textAnnotations.value, selectedTextId,
@@ -222,6 +230,7 @@ watch(
 )
 
 watch(regions, () => engine.scheduleRender(), { deep: true })
+watch(gridGroups, () => engine.scheduleRender(), { deep: true })
 watch(textAnnotations, () => engine.scheduleRender(), { deep: true })
 
 // Trigger ruler redraw when layers change
@@ -230,11 +239,18 @@ watch([hGuides, vGuides], () => raf(drawRulers), { deep: true })
 watch(() => editor.activeGuide, () => raf(drawRulers), { deep: true })
 
 function selectRegion(id: string) { engine.selectRegion(id) }
+function selectGridGroup(id: string) { engine.selectGridGroup(id) }
 function selectText(id: string) { engine.selectText(id) }
 
 function deleteRegion(id: string) {
   history.snapshot()
   editor.deleteRegion(id)
+  engine.scheduleRender()
+}
+
+function deleteGridGroup(id: string) {
+  history.snapshot()
+  editor.deleteGridGroup(id)
   engine.scheduleRender()
 }
 
@@ -246,6 +262,15 @@ function deleteText(id: string) {
 
 function copySelectedRegion() { engine.copySelectedRegion() }
 function pasteRegion() { engine.pasteRegion() }
+
+function createDefaultNGrid() {
+  if (!editor.imageLoaded) return
+  history.snapshot()
+  const group = createDefaultGridGroup(editor.activeLayer)
+  editor.gridGroups.push(group)
+  editor.selectGridGroup(group.id)
+  engine.scheduleRender()
+}
 
 interface PresetCropSizeInput {
   id: string
@@ -296,8 +321,8 @@ function createPresetRegion(preset: PresetCropSizeInput) {
 }
 
 defineExpose({
-  selectRegion, selectText,
-  deleteRegion, deleteText,
+  selectRegion, selectGridGroup, selectText,
+  deleteRegion, deleteGridGroup, deleteText,
   loadImage: engine.loadImage,
   copySelectedRegion, pasteRegion,
   fitToCanvas: engine.fitToCanvas,
@@ -305,24 +330,38 @@ defineExpose({
   finalizeCustomPolygon: engine.finalizeCustomPolygon,
   scheduleRender: engine.scheduleRender,
   createPresetRegion,
+  createDefaultNGrid,
 })
 
 function handleDragOver(e: DragEvent) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' }
-function handleDrop(e: DragEvent) {
+async function handleDrop(e: DragEvent) {
   e.preventDefault()
   const files = e.dataTransfer?.files
   if (!files || files.length === 0) return
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i]
-    if (!file.type.startsWith('image/')) continue
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const img = new Image()
-      img.onload = () => { editor.addLayer(img, file.name); engine.fitToCanvas() }
-      img.src = ev.target?.result as string
+  const check = validateEditorImageFiles(Array.from(files), editor.layers.length)
+  const rejected = [...check.rejected]
+  const warnings = [...check.warnings]
+  let addedCount = 0
+
+  for (const file of check.accepted) {
+    try {
+      const img = await loadImageFromFile(file)
+      const layerCheck = validateImageBeforeLayerAdd(img, getEditorLayerPixels(editor.layers), file.name)
+      if (!layerCheck.ok) {
+        rejected.push(layerCheck.message)
+        continue
+      }
+      if (layerCheck.message) warnings.push(layerCheck.message)
+      editor.addLayer(img, file.name)
+      addedCount++
+    } catch (err) {
+      rejected.push(err instanceof Error ? err.message : `${file.name}: 图片解码失败`)
     }
-    reader.readAsDataURL(file)
   }
+  if (addedCount > 0) engine.fitToCanvas()
+
+  const feedback = buildImportFeedback(rejected, [...new Set(warnings)])
+  if (feedback) window.alert(feedback)
 }
 
 // ---- ruler clicks → guide lines ----
@@ -366,6 +405,7 @@ function objectSnapTargets(axis: 'h' | 'v') {
     )
   }
   for (const region of editor.regions) addBounds(region.x, region.y, region.width, region.height)
+  for (const group of editor.gridGroups) addBounds(group.x, group.y, group.width, group.height)
   for (const text of editor.textAnnotations) addBounds(text.x, text.y, text.width, text.height)
   return targets
 }

@@ -16,6 +16,8 @@ const { loadModel, runInference, cancel } = useMattingInference()
 const show = ref(false)
 const canvasComponent = ref<InstanceType<typeof MattingCanvas> | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
+const isDraggingFile = ref(false)
+let dragDepth = 0
 
 // 无需提前检测 WebGPU，FP16 始终可选。
 // DXC/驱动层面的 WebGPU 失败 JavaScript 无法可靠探知。
@@ -66,11 +68,12 @@ function triggerUpload() {
   fileInput.value?.click()
 }
 
-function handleFileChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const files = input.files
-  if (!files || files.length === 0) return
-  const file = files[0]
+function loadImageFile(file: File) {
+  if (!file.type.startsWith('image/')) {
+    store.lastError = '请拖入图片文件'
+    return
+  }
+
   const reader = new FileReader()
   reader.onload = (ev) => {
     const img = new Image()
@@ -87,7 +90,45 @@ function handleFileChange(e: Event) {
     store.lastError = '文件读取失败'
   }
   reader.readAsDataURL(file)
+}
+
+function handleFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files || files.length === 0) return
+  loadImageFile(files[0])
   input.value = ''
+}
+
+function hasDraggedFiles(e: DragEvent) {
+  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
+}
+
+function handleDragEnter(e: DragEvent) {
+  if (!hasDraggedFiles(e)) return
+  dragDepth++
+  isDraggingFile.value = true
+}
+
+function handleDragOver(e: DragEvent) {
+  if (!hasDraggedFiles(e)) return
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  isDraggingFile.value = true
+}
+
+function handleDragLeave(e: DragEvent) {
+  if (!hasDraggedFiles(e)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) isDraggingFile.value = false
+}
+
+function handleDrop(e: DragEvent) {
+  dragDepth = 0
+  isDraggingFile.value = false
+
+  const files = e.dataTransfer?.files
+  if (!files || files.length === 0) return
+  loadImageFile(files[0])
 }
 
 function useCurrentLayer(useEdited = false) {
@@ -384,8 +425,22 @@ defineExpose({ open, close })
           </div>
 
           <!-- Center canvas -->
-          <div class="matting-center">
+          <div
+            class="matting-center"
+            :class="{ 'is-dragging-file': isDraggingFile }"
+            @dragenter.prevent="handleDragEnter"
+            @dragover.prevent="handleDragOver"
+            @dragleave.prevent="handleDragLeave"
+            @drop.prevent="handleDrop"
+          >
             <MattingCanvas ref="canvasComponent" />
+            <div v-if="isDraggingFile" class="matting-drop-overlay" aria-hidden="true">
+              <div class="matting-drop-target">
+                <svg class="matting-drop-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path v-for="path in iconPaths.upload" :key="path" :d="path" />
+                </svg>
+              </div>
+            </div>
             <div v-if="editor.isHeavyProcessing" class="matting-loading-overlay">
               <span class="matting-loading-text">处理中...</span>
             </div>
@@ -586,6 +641,28 @@ defineExpose({ open, close })
 .matting-center {
   flex: 1; display: flex; flex-direction: column; overflow: hidden;
   position: relative;
+}
+.matting-center.is-dragging-file {
+  outline: 1px solid rgba(40, 199, 111, 0.72);
+  outline-offset: -1px;
+}
+.matting-drop-overlay {
+  position: absolute; inset: 0; z-index: 15;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(7, 16, 11, 0.48);
+  pointer-events: none;
+}
+.matting-drop-target {
+  width: 72px; height: 72px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed rgba(40, 199, 111, 0.76);
+  background: rgba(40, 199, 111, 0.1);
+  color: var(--accent);
+}
+.matting-drop-icon {
+  width: 30px; height: 30px;
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 .matting-loading-overlay {
   position: absolute; inset: 0; z-index: 20;

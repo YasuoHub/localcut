@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { CropRegion, TextAnnotation, ImageFormat, ExportInspectionResult, ColorProcessScope } from '../types'
+import type { CropGridGroup, CropRegion, TextAnnotation, ImageFormat, ExportInspectionResult, ColorProcessScope } from '../types'
 import { useExport } from '../composables/useExport'
 import { inspectExport } from '../composables/useExportInspection'
+import { expandGridGroup } from '../composables/useGridGroups'
 import { useEditorStore } from '../stores/editor'
 import { useExportStore } from '../stores/export'
 import { useHistoryStore } from '../stores/history'
@@ -23,6 +24,7 @@ import BatchCutPanel from './right/BatchCutPanel.vue'
 import TemplatePanel from './right/TemplatePanel.vue'
 import ExportInspectionModal from './ExportInspectionModal.vue'
 import ImageZoomModal from './ImageZoomModal.vue'
+import PreviewModal from './PreviewModal.vue'
 
 const editor = useEditorStore()
 const exp = useExportStore()
@@ -87,7 +89,7 @@ function startListResize(e: PointerEvent) {
 
 onBeforeUnmount(stopListResize)
 
-const { exportSingleRegion, computeSourcePixelRatio } = useExport()
+const { exportSingleRegion, exportSingleLayer, exportGridGroup, downloadZip, computeSourcePixelRatio } = useExport()
 
 // Watch platform preset to auto-fill size
 watch(() => exp.selectedPlatformPresetId, (id) => {
@@ -194,6 +196,106 @@ function updateBorderRadius() {
 function onBorderRadiusInput() {
   if (!editor.selectedRegion || editor.selectedRegion.shape !== 'roundrect') return
   editor.selectedRegion.borderRadius = Math.max(0, editBorderRadius.value)
+  editor.invalidateCanvas()
+}
+
+// ---- grid group editing ----
+const editGridName = ref('')
+const editGridX = ref(0)
+const editGridY = ref(0)
+const editGridWidth = ref(0)
+const editGridHeight = ref(0)
+const editGridRows = ref(3)
+const editGridCols = ref(3)
+const editGridGapX = ref(0)
+const editGridGapY = ref(0)
+const editGridBorderRadius = ref(0)
+const gridWidthFocused = ref(false)
+const gridHeightFocused = ref(false)
+
+function syncFromGridGroup(group: CropGridGroup) {
+  editGridName.value = group.name
+  editGridX.value = Math.round(group.x)
+  editGridY.value = Math.round(group.y)
+  if (!gridWidthFocused.value) editGridWidth.value = Math.round(group.width)
+  if (!gridHeightFocused.value) editGridHeight.value = Math.round(group.height)
+  editGridRows.value = group.rows
+  editGridCols.value = group.cols
+  editGridGapX.value = Math.round(group.gapX)
+  editGridGapY.value = Math.round(group.gapY)
+  editGridBorderRadius.value = Math.round(group.borderRadius)
+}
+
+watch(() => editor.selectedGridGroup, (group, old) => {
+  if (group && group.id !== old?.id) syncFromGridGroup(group)
+}, { immediate: true })
+
+watch(
+  () => editor.selectedGridGroup
+    ? `${editor.selectedGridGroup.x}|${editor.selectedGridGroup.y}|${editor.selectedGridGroup.width}|${editor.selectedGridGroup.height}|${editor.selectedGridGroup.rows}|${editor.selectedGridGroup.cols}|${editor.selectedGridGroup.gapX}|${editor.selectedGridGroup.gapY}|${editor.selectedGridGroup.borderRadius}`
+    : null,
+  () => {
+    if (editor.selectedGridGroup) syncFromGridGroup(editor.selectedGridGroup)
+  },
+)
+
+function updateGridName() {
+  const group = editor.selectedGridGroup
+  if (!group) return
+  const name = editGridName.value.trim()
+  if (!name) { editGridName.value = group.name; return }
+  if (editor.gridGroups.some(g => g.id !== group.id && g.name === name)) {
+    editGridName.value = group.name
+    return
+  }
+  history.snapshot()
+  group.name = name
+  editor.invalidateCanvas()
+}
+
+function updateGridPosition() {
+  const group = editor.selectedGridGroup
+  if (!group) return
+  if (Math.round(group.x) === editGridX.value && Math.round(group.y) === editGridY.value) return
+  history.snapshot()
+  group.x = editGridX.value
+  group.y = editGridY.value
+  editor.invalidateCanvas()
+}
+
+function updateGridSize() {
+  const group = editor.selectedGridGroup
+  if (!group) return
+  const nextWidth = Math.max(1, editGridWidth.value)
+  const nextHeight = Math.max(1, editGridHeight.value)
+  if (Math.round(group.width) === nextWidth && Math.round(group.height) === nextHeight) return
+  history.snapshot()
+  group.width = nextWidth
+  group.height = nextHeight
+  editor.invalidateCanvas()
+}
+
+function updateGridLayout() {
+  const group = editor.selectedGridGroup
+  if (!group) return
+  history.snapshot()
+  group.rows = Math.max(1, Math.round(editGridRows.value))
+  group.cols = Math.max(1, Math.round(editGridCols.value))
+  group.gapX = Math.max(0, editGridGapX.value)
+  group.gapY = Math.max(0, editGridGapY.value)
+  group.borderRadius = Math.max(0, editGridBorderRadius.value)
+  syncFromGridGroup(group)
+  editor.invalidateCanvas()
+}
+
+function onGridLayoutInput() {
+  const group = editor.selectedGridGroup
+  if (!group) return
+  group.rows = Math.max(1, Math.round(editGridRows.value))
+  group.cols = Math.max(1, Math.round(editGridCols.value))
+  group.gapX = Math.max(0, editGridGapX.value)
+  group.gapY = Math.max(0, editGridGapY.value)
+  group.borderRadius = Math.max(0, editGridBorderRadius.value)
   editor.invalidateCanvas()
 }
 
@@ -548,15 +650,163 @@ async function handleExportSingle() {
   }
 }
 
+function zipSafeName(name: string) {
+  return `${name.replace(/[\\/:*?"<>|]/g, '_') || 'grid-group'}.zip`
+}
+
+async function handleExportGridGroup() {
+  const group = editor.selectedGridGroup
+  if (!editor.imageLoaded || !group) return
+  const cells = expandGridGroup(group)
+  const cellIndexById = Object.fromEntries(cells.map((cell, index) => [cell.id, index + 1]))
+  const singleResult = inspectExport({
+    allRegions: cells,
+    targetRegions: cells,
+    selectedCount: cells.length,
+    layers: editor.layers,
+    activeLayer: editor.activeLayer,
+    format: exp.exportFormat,
+    filenamePattern: exp.singleUseFilenamePattern ? exp.filenamePattern : '{regionName}',
+    imageName: exportImageName.value,
+    regionIndexById: cellIndexById,
+    settings: {
+      ...exp.inspectionSettings,
+      checkedCount: false,
+      filenameDuplicate: true,
+      unknownVariable: exp.singleUseFilenamePattern && exp.inspectionSettings.unknownVariable,
+    },
+    useCustomSize: Boolean(exp.exportOutputWidth || exp.exportOutputHeight),
+    outputWidth: exp.exportOutputWidth,
+    outputHeight: exp.exportOutputHeight,
+    dpr: exp.exportDpr,
+    upscaleEnabled: exp.upscaleEnabled,
+  })
+  if (singleResult.hasBlockingIssues) {
+    inspectionExportWarning.value = '导出体检发现阻断问题，请先查看检测结果。'
+    activeInspectionResult.value = singleResult
+    showInspectionModal.value = true
+    return
+  }
+
+  activeInspectionResult.value = null
+  inspectionExportWarning.value = ''
+  isExporting.value = true
+  exportingSingle.value = true
+  exportStatusText.value = '正在导出 N宫格...'
+  try {
+    const upscaleFn = await createUpscaleFn()
+    const namingOptions = exp.singleUseFilenamePattern
+      ? {
+          pattern: exp.filenamePattern,
+          imageName: exportImageName.value,
+          regionIndexById: cellIndexById,
+        }
+      : undefined
+    const blob = await exportGridGroup(
+      editor.layers, group,
+      exp.exportFormat, exp.exportQuality, exp.exportDpr,
+      editor.showOriginal,
+      editor.textAnnotations,
+      namingOptions,
+      exp.exportOutputWidth, exp.exportOutputHeight,
+      undefined, undefined,
+      upscaleFn,
+      exp.sharpenAmount,
+    )
+    downloadZip(blob, zipSafeName(group.name))
+  } catch (err) {
+    console.error('Grid group export failed:', err)
+  } finally {
+    isExporting.value = false
+    exportingSingle.value = false
+    sharedUpscaleCleanup?.()
+    sharedUpscaleCleanup = null
+    exportStatusText.value = ''
+  }
+}
+
+async function handleExportActiveLayer() {
+  const layer = editor.activeLayer
+  if (!layer || exportingSingle.value || isExporting.value) return
+
+  activeInspectionResult.value = null
+  inspectionExportWarning.value = ''
+  isExporting.value = true
+  exportingSingle.value = true
+  exportStatusText.value = '正在导出图层...'
+  try {
+    const upscaleFn = await createUpscaleFn()
+    const outputWidth = exp.batchUseCustomSize ? exp.batchOutputWidth : null
+    const outputHeight = exp.batchUseCustomSize ? exp.batchOutputHeight : null
+    const fit = exp.batchUseCustomSize ? exp.batchFitMode : undefined
+    const namingOptions = exp.singleUseFilenamePattern
+      ? {
+          pattern: exp.filenamePattern,
+          imageName: exportImageName.value,
+          index: editor.layers.findIndex(item => item.id === layer.id) + 1 || 1,
+        }
+      : undefined
+
+    await exportSingleLayer(
+      layer,
+      exp.exportFormat,
+      exp.exportQuality,
+      outputWidth,
+      outputHeight,
+      exp.exportDpr,
+      editor.showOriginal,
+      fit,
+      exp.batchFillColor,
+      upscaleFn,
+      exp.sharpenAmount,
+      namingOptions,
+    )
+  } catch (err) {
+    console.error('Layer export failed:', err)
+  } finally {
+    isExporting.value = false
+    exportingSingle.value = false
+    sharedUpscaleCleanup?.()
+    sharedUpscaleCleanup = null
+    exportStatusText.value = ''
+  }
+}
+
 // ---- preview ----
 const previewZoomRegion = ref<CropRegion | null>(null)
 const previewZoomShow = ref(false)
+const gridPreviewModalRef = ref<InstanceType<typeof PreviewModal> | null>(null)
+const previewGridGroupId = ref<string | null>(null)
 
 function handlePreviewSingle() {
   const region = editor.selectedRegion
   if (!editor.imageLoaded || !region) return
   previewZoomRegion.value = region
   previewZoomShow.value = true
+}
+
+function handlePreviewGridGroup() {
+  const group = editor.selectedGridGroup
+  if (!editor.imageLoaded || !group) return
+  const cells = expandGridGroup(group)
+  previewGridGroupId.value = group.id
+  gridPreviewModalRef.value?.open({
+    regions: cells,
+    title: `${group.name} 预览`,
+    exportLabel: '导出 N宫格 ZIP',
+  })
+}
+
+async function handleGridPreviewExport() {
+  const groupId = previewGridGroupId.value
+  const group = groupId ? editor.gridGroups.find(g => g.id === groupId) : editor.selectedGridGroup
+  if (!group) return
+  const previousGroupId = editor.selectedGridGroupId
+  if (editor.selectedGridGroupId !== group.id) editor.selectGridGroup(group.id)
+  await handleExportGridGroup()
+  if (previousGroupId && previousGroupId !== group.id && editor.gridGroups.some(g => g.id === previousGroupId)) {
+    editor.selectGridGroup(previousGroupId)
+  }
 }
 
 // ---- region transforms ----
@@ -590,12 +840,18 @@ function handleRotate() {
 
 // ---- region list ----
 const sortedRegions = computed(() => [...editor.regions].reverse())
+const sortedGridGroups = computed(() => [...editor.gridGroups].reverse())
 const sortedTexts = computed(() => [...editor.textAnnotations].reverse())
 const listKeyword = computed(() => listSearch.value.trim().toLowerCase())
 const filteredRegions = computed(() => {
   const keyword = listKeyword.value
   if (!keyword) return sortedRegions.value
   return sortedRegions.value.filter(region => region.name.toLowerCase().includes(keyword))
+})
+const filteredGridGroups = computed(() => {
+  const keyword = listKeyword.value
+  if (!keyword) return sortedGridGroups.value
+  return sortedGridGroups.value.filter(group => group.name.toLowerCase().includes(keyword))
 })
 const filteredTexts = computed(() => {
   const keyword = listKeyword.value
@@ -624,12 +880,19 @@ const exportResolutionInfo = computed(() => {
 })
 
 function selectRegion(id: string, _e: MouseEvent) {
+  editor.selectedGridGroupIds = new Set()
   editor.selectRegion(id)
   editor.activeTool = 'select'
 }
 
+function selectGridGroup(id: string) {
+  editor.selectedGridGroupIds = new Set()
+  editor.selectGridGroup(id)
+  editor.activeTool = 'select'
+}
+
 function checkedRegions(): CropRegion[] {
-  if (editor.selectedRegionIds.size === 0) return editor.regions
+  if (editor.selectedRegionIds.size === 0 && editor.selectedGridGroupIds.size === 0) return editor.regions
   return editor.regions.filter(r => editor.selectedRegionIds.has(r.id))
 }
 
@@ -638,15 +901,22 @@ const inspectionExportWarning = ref('')
 const activeInspectionResult = ref<ExportInspectionResult | null>(null)
 
 const exportImageName = computed(() => editor.activeLayer?.name?.replace(/\.[^.]+$/, '') ?? 'image')
-const regionIndexById = computed(() => Object.fromEntries(editor.regions.map((r, i) => [r.id, i + 1])))
-const inspectionTargetRegions = computed(() => checkedRegions())
+const expandedGridRegions = computed(() => editor.gridGroups.flatMap(group => expandGridGroup(group)))
+const inspectionAllRegions = computed(() => [...editor.regions, ...expandedGridRegions.value])
+const regionIndexById = computed(() => Object.fromEntries(inspectionAllRegions.value.map((r, i) => [r.id, i + 1])))
+const inspectionTargetRegions = computed(() => [
+  ...checkedRegions(),
+  ...(editor.selectedGridGroupIds.size > 0
+    ? editor.gridGroups.filter(group => editor.selectedGridGroupIds.has(group.id)).flatMap(group => expandGridGroup(group))
+    : editor.selectedRegionIds.size === 0 ? expandedGridRegions.value : []),
+])
 const inspectionResult = computed(() => {
   const bw = exp.batchUseCustomSize ? exp.batchOutputWidth : null
   const bh = exp.batchUseCustomSize ? exp.batchOutputHeight : null
   return inspectExport({
-    allRegions: editor.regions,
+    allRegions: inspectionAllRegions.value,
     targetRegions: inspectionTargetRegions.value,
-    selectedCount: editor.selectedRegionIds.size,
+    selectedCount: editor.selectedRegionIds.size + editor.selectedGridGroupIds.size,
     layers: editor.layers,
     activeLayer: editor.activeLayer,
     format: exp.exportFormat,
@@ -880,12 +1150,26 @@ function deleteLayerSelection() {
                 <button
                   class="btn-primary preview-single-btn"
                   :class="{ 'cancel-mode': hasColorProcessPreview }"
-                  :disabled="editor.isHeavyProcessing"
+                  :disabled="editor.isHeavyProcessing || exportingSingle"
                   @click="toggleColorProcessPreview"
                 >
                   {{ hasColorProcessPreview ? '取消预览' : '预览' }}
                 </button>
-                <button class="btn-primary export-single-btn" :disabled="editor.isHeavyProcessing" @click="applyColorProcessToLayer">应用到图层</button>
+                <button class="btn-primary export-single-btn" :disabled="editor.isHeavyProcessing || exportingSingle" @click="applyColorProcessToLayer">应用到图层</button>
+                <button
+                  class="btn-primary export-layer-icon-btn"
+                  type="button"
+                  title="导出图层"
+                  aria-label="导出图层"
+                  :disabled="editor.isHeavyProcessing || exportingSingle"
+                  @click="handleExportActiveLayer"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3v11" />
+                    <path d="m7 10 5 5 5-5" />
+                    <path d="M5 19h14" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
@@ -959,6 +1243,32 @@ function deleteLayerSelection() {
           </div>
         </section>
 
+        <section class="section" v-if="editor.selectedGridGroup">
+          <div class="section-title">N宫格属性</div>
+          <div class="field"><label>名称</label><input type="text" v-model="editGridName" @blur="updateGridName" @keyup.enter="updateGridName" /></div>
+          <div class="field-row">
+            <div class="field"><label>X (px)</label><input type="number" v-model.number="editGridX" @change="updateGridPosition" /></div>
+            <div class="field"><label>Y (px)</label><input type="number" v-model.number="editGridY" @change="updateGridPosition" /></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>宽度 (px)</label><input type="number" v-model.number="editGridWidth" min="1" @focus="gridWidthFocused = true" @blur="gridWidthFocused = false; updateGridSize()" /></div>
+            <div class="field"><label>高度 (px)</label><input type="number" v-model.number="editGridHeight" min="1" @focus="gridHeightFocused = true" @blur="gridHeightFocused = false; updateGridSize()" /></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>行数</label><input type="number" v-model.number="editGridRows" min="1" @input="onGridLayoutInput" @change="updateGridLayout" /></div>
+            <div class="field"><label>列数</label><input type="number" v-model.number="editGridCols" min="1" @input="onGridLayoutInput" @change="updateGridLayout" /></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>横向间距</label><input type="number" v-model.number="editGridGapX" min="0" @input="onGridLayoutInput" @change="updateGridLayout" /></div>
+            <div class="field"><label>纵向间距</label><input type="number" v-model.number="editGridGapY" min="0" @input="onGridLayoutInput" @change="updateGridLayout" /></div>
+          </div>
+          <div class="field"><label>圆角 (px)</label><input type="number" v-model.number="editGridBorderRadius" min="0" @input="onGridLayoutInput" @change="updateGridLayout" /></div>
+          <div class="btn-row">
+            <button class="btn-primary preview-single-btn" @click="handlePreviewGridGroup">预览 N宫格</button>
+            <button class="btn-primary export-single-btn" :disabled="exportingSingle" @click="handleExportGridGroup">{{ exportingSingle ? (exportStatusText || '导出中...') : '导出 N宫格 ZIP' }}</button>
+          </div>
+        </section>
+
         <section class="section" v-if="editor.selectedText">
           <div class="section-title">文字属性</div>
           <div class="field"><label>内容</label><input type="text" v-model="editText" placeholder="输入文字..." @input="applyTextEdits" @blur="commitTextEdits" /></div>
@@ -969,7 +1279,7 @@ function deleteLayerSelection() {
           <div class="field"><label>颜色</label><input type="color" v-model="editFontColor" @input="applyTextEdits" class="color-input" /></div>
         </section>
 
-        <section class="section" v-if="!editor.selectedRegion && !editor.selectedText && editor.activeTool !== 'brush' && editor.activeTool !== 'eraser' && editor.activeTool !== 'magic-wand'">
+        <section class="section" v-if="!editor.selectedRegion && !editor.selectedGridGroup && !editor.selectedText && editor.activeTool !== 'brush' && editor.activeTool !== 'eraser' && editor.activeTool !== 'magic-wand'">
           <div class="section-title">属性</div>
           <div class="empty">选择区域、文字或图层以编辑属性</div>
         </section>
@@ -1092,7 +1402,7 @@ function deleteLayerSelection() {
         <div v-else class="region-list">
           <div
             v-for="r in filteredRegions" :key="r.id"
-            class="region-item" :class="{ selected: r.id === editor.selectedRegionId }"
+            class="region-item" :class="{ selected: r.id === editor.selectedRegionId || editor.selectedRegionIds.has(r.id) }"
             @click="selectRegion(r.id, $event)"
           >
             <input type="checkbox" :checked="editor.selectedRegionIds.has(r.id)" class="region-check" @click.stop @change="editor.toggleRegionCheck(r.id)" />
@@ -1100,6 +1410,26 @@ function deleteLayerSelection() {
             <span class="region-name">{{ r.name }}</span>
             <span class="region-dims">{{ Math.round(r.width) }}×{{ Math.round(r.height) }}</span>
             <button class="region-delete" title="删除" @click.stop="history.snapshot(); editor.deleteRegion(r.id)">×</button>
+          </div>
+        </div>
+
+        <div class="list-subtitle text-subtitle">
+          <span>N宫格</span>
+        </div>
+        <div v-if="filteredGridGroups.length === 0" class="empty list-empty">暂无匹配 N宫格</div>
+        <div v-else class="region-list">
+          <div
+            v-for="group in filteredGridGroups"
+            :key="group.id"
+            class="region-item"
+            :class="{ selected: group.id === editor.selectedGridGroupId || editor.selectedGridGroupIds.has(group.id) }"
+            @click="selectGridGroup(group.id)"
+          >
+            <input type="checkbox" :checked="editor.selectedGridGroupIds.has(group.id)" class="region-check" @click.stop @change="editor.toggleGridGroupCheck(group.id)" />
+            <span class="region-shape-icon">#</span>
+            <span class="region-name">{{ group.name }}</span>
+            <span class="region-dims">{{ group.rows }}x{{ group.cols }}</span>
+            <button class="region-delete" title="删除" @click.stop="history.snapshot(); editor.deleteGridGroup(group.id)">x</button>
           </div>
         </div>
 
@@ -1125,6 +1455,7 @@ function deleteLayerSelection() {
   </aside>
   <ExportInspectionModal v-model:show="showInspectionModal" :result="modalInspectionResult" />
   <ImageZoomModal :region="previewZoomRegion" v-model:show="previewZoomShow" />
+  <PreviewModal ref="gridPreviewModalRef" @export="handleGridPreviewExport" />
 
   <!-- Export loading overlay -->
   <Teleport to="body">
@@ -1217,7 +1548,26 @@ function deleteLayerSelection() {
 .checkbox-label { display: flex !important; align-items: center; gap: 6px; cursor: pointer; font-size: 12px !important; }
 .checkbox-label input { accent-color: var(--accent); }
 .empty { font-size: 11px; color: var(--text-muted); }
-.export-single-btn { flex: 1; }
+.export-single-btn { flex: 1; white-space: nowrap; }
+.export-layer-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.export-layer-icon-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .btn-row { display: flex; gap: 6px; }
 .color-fields-row {
   display: grid;
@@ -1265,7 +1615,8 @@ function deleteLayerSelection() {
   color: var(--text-primary);
 }
 .preview-single-btn:disabled,
-.export-single-btn:disabled {
+.export-single-btn:disabled,
+.export-layer-icon-btn:disabled {
   opacity: 0.6;
   cursor: wait;
   color: var(--text-secondary);
@@ -1274,7 +1625,8 @@ function deleteLayerSelection() {
   background: var(--bg-primary);
   border-color: var(--border-strong);
 }
-.export-single-btn:disabled {
+.export-single-btn:disabled,
+.export-layer-icon-btn:disabled {
   background: var(--bg-tertiary);
 }
 .color-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-primary); cursor: pointer; padding: 2px; }

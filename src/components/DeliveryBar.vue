@@ -18,6 +18,7 @@ const {
   isExporting,
   exportStatusText,
   inspectionResult,
+  performanceGate,
   modalInspectionResult,
   showInspectionModal,
   openInspectionResult,
@@ -26,24 +27,26 @@ const {
 
 const targetLabel = computed(() => {
   if (!editor.imageLoaded) return '导入图片后可生成区域并导出'
-  if (editor.regions.length === 0) return '暂无裁剪区域'
-  if (checkedCount.value > 0) return `将导出已勾选 ${checkedCount.value} / 共 ${editor.regions.length} 项`
-  return `将导出全部 ${editor.regions.length} 项`
+  if (editor.regions.length === 0 && editor.gridGroups.length === 0) return '暂无裁剪区域'
+  if (checkedCount.value > 0) return `将导出已勾选 ${checkedCount.value} 项`
+  return `将导出 ${performanceGate.value.itemCount} 张图片`
 })
 
 const checkLabel = computed(() => {
-  if (!editor.imageLoaded || editor.regions.length === 0) return '无可导出内容'
+  if (!editor.imageLoaded || (editor.regions.length === 0 && editor.gridGroups.length === 0)) return '无可导出内容'
   const errors = inspectionResult.value.issues.filter(item => item.severity === 'error').length
   const warnings = inspectionResult.value.issues.filter(item => item.severity === 'warning').length
   if (errors > 0) return `无法导出：${errors} 个错误`
+  if (performanceGate.value.hasBlockingIssues) return '超过性能上限'
+  if (performanceGate.value.hasWarnings) return '接近性能上限'
   if (warnings > 0) return `${warnings} 个警告`
   return '可导出'
 })
 
 const checkTone = computed(() => {
-  if (!editor.imageLoaded || editor.regions.length === 0) return 'muted'
-  if (inspectionResult.value.hasBlockingIssues) return 'danger'
-  if (inspectionResult.value.issues.some(item => item.severity === 'warning')) return 'warning'
+  if (!editor.imageLoaded || (editor.regions.length === 0 && editor.gridGroups.length === 0)) return 'muted'
+  if (inspectionResult.value.hasBlockingIssues || performanceGate.value.hasBlockingIssues) return 'danger'
+  if (performanceGate.value.hasWarnings || inspectionResult.value.issues.some(item => item.severity === 'warning')) return 'warning'
   return 'success'
 })
 

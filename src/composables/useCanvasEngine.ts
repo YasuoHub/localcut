@@ -1,9 +1,10 @@
 import { ref, reactive, watch, type Ref } from 'vue'
-import type { CropRegion, ShapeType, TextAnnotation, DragType, CanvasViewState, ImageLayer } from '../types'
+import type { CropGridGroup, CropRegion, ShapeType, TextAnnotation, DragType, CanvasViewState, ImageLayer } from '../types'
 import { drawShapePath, addShapeToPath, nextRegionName } from './shapeUtils'
 import { magicWandSelect } from './magicWandUtils'
 import { useEditorStore } from '../stores/editor'
 import { rgbToHex } from '../utils/colorProcessing'
+import { expandGridGroup, nextGridGroupId } from './useGridGroups'
 
 export { drawShapePath }
 
@@ -48,8 +49,11 @@ export function useCanvasEngine(
   canvasRef: Ref<HTMLCanvasElement | null>,
   containerRef: Ref<HTMLElement | null>,
   regions: CropRegion[],
+  gridGroups: CropGridGroup[],
   selectedRegionId: Ref<string | null>,
+  selectedGridGroupId: Ref<string | null>,
   selectedRegionIds: Ref<Set<string>>,
+  selectedGridGroupIds: Ref<Set<string>>,
   activeTool: Ref<'select' | ShapeType | 'brush' | 'eraser' | 'text' | 'magic-wand'>,
   brushSettings: Ref<{ size: number; color: string }>,
   eraserSettings: Ref<{ size: number }>,
@@ -152,6 +156,7 @@ export function useCanvasEngine(
 
   // clipboard
   interface ClipboardRegion {
+    kind: 'region'
     shape: ShapeType
     width: number
     height: number
@@ -161,8 +166,23 @@ export function useCanvasEngine(
     borderRadius?: number
     points?: { x: number; y: number }[]
   }
+  interface ClipboardGridGroup {
+    kind: 'gridGroup'
+    name: string
+    origX: number
+    origY: number
+    width: number
+    height: number
+    rows: number
+    cols: number
+    gapX: number
+    gapY: number
+    borderRadius: number
+  }
 
-  const clipboard = ref<ClipboardRegion[]>([])
+  type ClipboardItem = ClipboardRegion | ClipboardGridGroup
+
+  const clipboard = ref<ClipboardItem[]>([])
   const pasteCount = ref(0)
 
   let renderRaf = 0
@@ -417,6 +437,11 @@ export function useCanvasEngine(
     return regions.find(r => r.id === selectedRegionId.value) ?? null
   }
 
+  function getSelectedGridGroup(): CropGridGroup | null {
+    if (!selectedGridGroupId.value) return null
+    return gridGroups.find(g => g.id === selectedGridGroupId.value) ?? null
+  }
+
   function getSelectedText(): TextAnnotation | null {
     if (!selectedTextId.value) return null
     return textAnnotations.find(t => t.id === selectedTextId.value) ?? null
@@ -539,14 +564,38 @@ export function useCanvasEngine(
   function selectRegion(id: string | null) {
     cleanupEmptyText()
     selectedRegionId.value = id
-    if (id) selectedTextId.value = null
+    if (id) {
+      selectedTextId.value = null
+      selectedGridGroupId.value = null
+    }
     markDirty()
+  }
+
+  function selectGridGroup(id: string | null) {
+    cleanupEmptyText()
+    selectedGridGroupId.value = id
+    if (id) {
+      selectedRegionId.value = null
+      selectedRegionIds.value = new Set()
+      selectedTextId.value = null
+    }
+    markDirty()
+  }
+
+  function clearCropSelection() {
+    selectedRegionId.value = null
+    selectedGridGroupId.value = null
+    selectedRegionIds.value = new Set()
+    selectedGridGroupIds.value = new Set()
   }
 
   function selectText(id: string | null) {
     cleanupEmptyText()
     selectedTextId.value = id
-    if (id) selectedRegionId.value = null
+    if (id) {
+      selectedRegionId.value = null
+      selectedGridGroupId.value = null
+    }
     markDirty()
   }
 
@@ -657,7 +706,16 @@ export function useCanvasEngine(
 
   // --- hit testing ---
 
-  function hitTestControlPoint(sx: number, sy: number): { id: string; type: DragType; isText: boolean } | null {
+  function hitTestControlPoint(sx: number, sy: number): { id: string; type: DragType; isText: boolean; isGridGroup?: boolean } | null {
+    const selectedGridGroup = getSelectedGridGroup()
+    if (selectedGridGroup) {
+      const pts = getControlPoints(selectedGridGroup.x, selectedGridGroup.y, selectedGridGroup.width, selectedGridGroup.height, view)
+      for (const pt of pts) {
+        if (Math.abs(sx - pt.sx) <= CP_HALF + 3 && Math.abs(sy - pt.sy) <= CP_HALF + 3) {
+          return { id: selectedGridGroup.id, type: pt.type, isText: false, isGridGroup: true }
+        }
+      }
+    }
     // check selected region
     const sel = getSelectedRegion()
     if (sel) {
@@ -763,6 +821,18 @@ export function useCanvasEngine(
     return null
   }
 
+  function hitTestGridGroup(sx: number, sy: number): CropGridGroup | null {
+    for (let i = gridGroups.length - 1; i >= 0; i--) {
+      const g = gridGroups[i]
+      const gx = (g.x - view.offsetX) * view.scale
+      const gy = (g.y - view.offsetY) * view.scale
+      const gw = g.width * view.scale
+      const gh = g.height * view.scale
+      if (sx >= gx && sx <= gx + gw && sy >= gy && sy <= gy + gh) return g
+    }
+    return null
+  }
+
   function hitTestActiveLayerHandle(sx: number, sy: number, threshold = 12): string | null {
     const layer = getActiveLayer()
     if (!layer || !layer.visible || layers.value.length === 0) return null
@@ -837,9 +907,15 @@ export function useCanvasEngine(
       ? selectedRegionIds.value
       : new Set(selectedRegionId.value ? [selectedRegionId.value] : [])
     const selectedRegions = regions.filter(r => selectedIds.has(r.id))
-    if (selectedRegions.length === 0) return
+    const selectedGridIds = selectedGridGroupIds.value.size > 0
+      ? selectedGridGroupIds.value
+      : new Set(selectedGridGroupId.value ? [selectedGridGroupId.value] : [])
+    const selectedGroups = gridGroups.filter(g => selectedGridIds.has(g.id))
+    if (selectedRegions.length === 0 && selectedGroups.length === 0) return
 
-    clipboard.value = selectedRegions.map(r => ({
+    clipboard.value = [
+      ...selectedRegions.map(r => ({
+      kind: 'region' as const,
       shape: r.shape,
       width: r.width,
       height: r.height,
@@ -848,7 +924,21 @@ export function useCanvasEngine(
       origY: r.y,
       borderRadius: r.borderRadius,
       points: r.points ? r.points.map(p => ({ ...p })) : undefined,
-    }))
+    })),
+      ...selectedGroups.map(g => ({
+        kind: 'gridGroup' as const,
+        name: g.name,
+        origX: g.x,
+        origY: g.y,
+        width: g.width,
+        height: g.height,
+        rows: g.rows,
+        cols: g.cols,
+        gapX: g.gapX,
+        gapY: g.gapY,
+        borderRadius: g.borderRadius,
+      })),
+    ]
     pasteCount.value = 0
   }
 
@@ -857,7 +947,9 @@ export function useCanvasEngine(
     const offset = 20 + pasteCount.value * 20
     snapshot?.()
     const existingNames = new Set(regions.map(r => r.name))
+    const existingGridNames = new Set(gridGroups.map(g => g.name))
     const pastedIds: string[] = []
+    const pastedGridIds: string[] = []
 
     for (const src of clipboard.value) {
       const clamped = clampToImage(src.origX + offset, src.origY + offset, src.width, src.height)
@@ -866,27 +958,54 @@ export function useCanvasEngine(
       const baseName = `${src.name}_copy`
       let pasteName = baseName
       let counter = 2
-      while (existingNames.has(pasteName)) {
-        pasteName = `${baseName}${counter}`
-        counter++
-      }
-      existingNames.add(pasteName)
+      if (src.kind === 'region') {
+        while (existingNames.has(pasteName)) {
+          pasteName = `${baseName}${counter}`
+          counter++
+        }
+        existingNames.add(pasteName)
 
-      const region: CropRegion = {
-        id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        name: pasteName,
-        ...clamped,
-        shape: src.shape,
-        borderRadius: src.borderRadius,
-        points: src.points ? src.points.map(p => ({ x: p.x + dx, y: p.y + dy })) : undefined,
+        const region: CropRegion = {
+          id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: pasteName,
+          ...clamped,
+          shape: src.shape,
+          borderRadius: src.borderRadius,
+          points: src.points ? src.points.map(p => ({ x: p.x + dx, y: p.y + dy })) : undefined,
+        }
+        regions.push(region)
+        pastedIds.push(region.id)
+      } else {
+        while (existingGridNames.has(pasteName)) {
+          pasteName = `${baseName}${counter}`
+          counter++
+        }
+        existingGridNames.add(pasteName)
+
+        const group: CropGridGroup = {
+          id: nextGridGroupId(),
+          name: pasteName,
+          x: clamped.x,
+          y: clamped.y,
+          width: clamped.width,
+          height: clamped.height,
+          rows: src.rows,
+          cols: src.cols,
+          gapX: src.gapX,
+          gapY: src.gapY,
+          borderRadius: src.borderRadius,
+        }
+        gridGroups.push(group)
+        pastedGridIds.push(group.id)
       }
-      regions.push(region)
-      pastedIds.push(region.id)
     }
 
     pasteCount.value++
     selectedRegionIds.value = pastedIds.length > 1 ? new Set(pastedIds) : new Set()
-    selectRegion(pastedIds[0] ?? null)
+    selectedGridGroupIds.value = pastedGridIds.length > 1 ? new Set(pastedGridIds) : new Set()
+    selectedRegionId.value = pastedIds[0] ?? null
+    selectedGridGroupId.value = pastedIds.length === 0 ? (pastedGridIds[0] ?? null) : null
+    selectedTextId.value = null
     markDirty()
   }
 
@@ -991,6 +1110,10 @@ export function useCanvasEngine(
           selectText(cp.id)
           isDragging.value = true
           draggingText.value = true
+        } else if (cp.isGridGroup) {
+          selectGridGroup(cp.id)
+          isDragging.value = true
+          draggingText.value = false
         } else {
           selectRegion(cp.id)
           isDragging.value = true
@@ -999,14 +1122,29 @@ export function useCanvasEngine(
         dragType.value = cp.type
         const obj = cp.isText
           ? textAnnotations.find(t => t.id === cp.id)
+          : cp.isGridGroup
+            ? gridGroups.find(g => g.id === cp.id)
           : regions.find(r => r.id === cp.id)
         if (obj) {
           dragStartBounds.value = { x: obj.x, y: obj.y, width: obj.width, height: obj.height }
-          if (!cp.isText) {
+          if (!cp.isText && !cp.isGridGroup) {
             const r = obj as CropRegion
             dragStartPoints.value = r.points ? r.points.map(p => ({ ...p })) : null
           }
         }
+        dragStartMouse.value = { sx, sy }
+        return
+      }
+      const hitG2 = hitTestGridGroup(sx, sy)
+      if (hitG2) {
+        snapshot?.()
+        selectGridGroup(hitG2.id)
+        isDragging.value = true
+        draggingText.value = false
+        dragType.value = 'move'
+        dragStartBounds.value = { x: hitG2.x, y: hitG2.y, width: hitG2.width, height: hitG2.height }
+        dragStartPoints.value = null
+        dragStartMultiBounds.value = null
         dragStartMouse.value = { sx, sy }
         return
       }
@@ -1043,6 +1181,7 @@ export function useCanvasEngine(
     // in non-select mode, no region/text hit → clear multi-select before tool action
     if (activeTool.value !== 'select') {
       selectedRegionIds.value = new Set()
+      selectedGridGroupIds.value = new Set()
       selectedLayerIds.value = new Set()
     }
 
@@ -1172,11 +1311,44 @@ export function useCanvasEngine(
       if (cp.isText) {
         const t = textAnnotations.find(t => t.id === cp.id)!
         dragStartBounds.value = { x: t.x, y: t.y, width: t.width, height: t.height }
+      } else if (cp.isGridGroup) {
+        selectGridGroup(cp.id)
+        const g = gridGroups.find(g => g.id === cp.id)!
+        dragStartBounds.value = { x: g.x, y: g.y, width: g.width, height: g.height }
+        dragStartPoints.value = null
       } else {
         const r = regions.find(r => r.id === cp.id)!
         dragStartBounds.value = { x: r.x, y: r.y, width: r.width, height: r.height }
         dragStartPoints.value = r.points ? r.points.map(p => ({ ...p })) : null
       }
+      dragStartMouse.value = { sx, sy }
+      return
+    }
+
+    const hitGrid = hitTestGridGroup(sx, sy)
+    if (hitGrid && activeTool.value === 'select') {
+      if (e.ctrlKey || e.metaKey) {
+        const newSet = new Set(selectedGridGroupIds.value)
+        if (newSet.has(hitGrid.id)) { newSet.delete(hitGrid.id) } else { newSet.add(hitGrid.id) }
+        selectedGridGroupIds.value = newSet
+        selectedGridGroupId.value = hitGrid.id
+        selectedTextId.value = null
+      } else {
+        if (!selectedGridGroupIds.value.has(hitGrid.id)) {
+          selectedRegionIds.value = new Set()
+          selectedGridGroupIds.value = new Set()
+        }
+        selectedGridGroupId.value = hitGrid.id
+        selectedRegionId.value = null
+        selectedTextId.value = null
+      }
+      snapshot?.()
+      isDragging.value = true
+      draggingText.value = false
+      dragType.value = 'move'
+      dragStartBounds.value = { x: hitGrid.x, y: hitGrid.y, width: hitGrid.width, height: hitGrid.height }
+      dragStartPoints.value = null
+      dragStartMultiBounds.value = null
       dragStartMouse.value = { sx, sy }
       return
     }
@@ -1193,6 +1365,7 @@ export function useCanvasEngine(
         // Normal click → clear multi-set if clicking outside
         if (!selectedRegionIds.value.has(hit.id)) {
           selectedRegionIds.value = new Set()
+          selectedGridGroupIds.value = new Set()
         }
       }
       snapshot?.()
@@ -1251,8 +1424,10 @@ export function useCanvasEngine(
     // click on empty area
     if (activeTool.value === 'select') {
       selectedRegionIds.value = new Set()
+      selectedGridGroupIds.value = new Set()
       selectedLayerIds.value = new Set()
       selectRegion(null)
+      selectGridGroup(null)
       selectText(null)
     } else {
       // shape drawing
@@ -1488,7 +1663,76 @@ export function useCanvasEngine(
       }
       const clamped = clampToImage(snappedBounds.x, snappedBounds.y, snappedBounds.width, snappedBounds.height)
 
-      if (draggingText.value) {
+      const isMixedCropMove = dt === 'move' && (
+        (selectedRegionId.value && selectedRegionIds.value.has(selectedRegionId.value)) ||
+        (selectedGridGroupId.value && selectedGridGroupIds.value.has(selectedGridGroupId.value))
+      ) && (selectedRegionIds.value.size + selectedGridGroupIds.value.size > 0)
+
+      if (isMixedCropMove) {
+        if (!dragStartMultiBounds.value) {
+          const map = new Map<string, { x: number; y: number; width: number; height: number; points?: { x: number; y: number }[] }>()
+          for (const id of selectedRegionIds.value) {
+            const rr = regions.find(rr => rr.id === id)
+            if (rr) {
+              map.set(`r:${id}`, {
+                x: rr.x, y: rr.y, width: rr.width, height: rr.height,
+                points: rr.points ? rr.points.map(p => ({ ...p })) : undefined,
+              })
+            }
+          }
+          for (const id of selectedGridGroupIds.value) {
+            const gg = gridGroups.find(gg => gg.id === id)
+            if (gg) {
+              map.set(`g:${id}`, { x: gg.x, y: gg.y, width: gg.width, height: gg.height })
+            }
+          }
+          dragStartMultiBounds.value = map
+        }
+        const movedBounds = boundsFromList([
+          ...[...selectedRegionIds.value].map(id => {
+            const start = dragStartMultiBounds.value?.get(`r:${id}`)
+            return start ? { x: start.x + dsx, y: start.y + dsy, width: start.width, height: start.height } : null
+          }),
+          ...[...selectedGridGroupIds.value].map(id => {
+            const start = dragStartMultiBounds.value?.get(`g:${id}`)
+            return start ? { x: start.x + dsx, y: start.y + dsy, width: start.width, height: start.height } : null
+          }),
+        ].filter((item): item is Bounds => Boolean(item)))
+        const snap = movedBounds ? snapMoveBounds(movedBounds, e) : { dx: 0, dy: 0 }
+        const dx = dsx + snap.dx
+        const dy = dsy + snap.dy
+        for (const id of selectedRegionIds.value) {
+          const rr = regions.find(rr => rr.id === id)
+          const start = dragStartMultiBounds.value.get(`r:${id}`)
+          if (!rr || !start) continue
+          rr.x = start.x + dx
+          rr.y = start.y + dy
+          rr.width = start.width
+          rr.height = start.height
+          if (rr.points && start.points) {
+            for (let i = 0; i < rr.points.length; i++) {
+              rr.points[i].x = start.points[i].x + dx
+              rr.points[i].y = start.points[i].y + dy
+            }
+          }
+        }
+        for (const id of selectedGridGroupIds.value) {
+          const gg = gridGroups.find(gg => gg.id === id)
+          const start = dragStartMultiBounds.value.get(`g:${id}`)
+          if (!gg || !start) continue
+          gg.x = start.x + dx
+          gg.y = start.y + dy
+          gg.width = start.width
+          gg.height = start.height
+        }
+      } else {
+      const selectedGrid = getSelectedGridGroup()
+      if (selectedGrid) {
+        selectedGrid.x = clamped.x
+        selectedGrid.y = clamped.y
+        selectedGrid.width = clamped.width
+        selectedGrid.height = clamped.height
+      } else if (draggingText.value) {
         const t = textAnnotations.find(t => t.id === (selectedTextId.value))
         if (t) { t.x = clamped.x; t.y = clamped.y; t.width = clamped.width; t.height = clamped.height }
       } else if (dt === 'move' && selectedRegionIds.value.size > 0 && selectedRegionIds.value.has(selectedRegionId.value!)) {
@@ -1570,6 +1814,7 @@ export function useCanvasEngine(
           r.x = clamped.x; r.y = clamped.y; r.width = clamped.width; r.height = clamped.height
         }
       }
+      }
 
       markDirty()
       return
@@ -1603,6 +1848,7 @@ export function useCanvasEngine(
       const mw = Math.abs(marqueeImgEnd.value.ix - marqueeImgStart.value.ix)
       const mh = Math.abs(marqueeImgEnd.value.iy - marqueeImgStart.value.iy)
       const newSet = new Set<string>()
+      const newGridSet = new Set<string>()
       for (const r of regions) {
         const rcx = r.x + r.width / 2
         const rcy = r.y + r.height / 2
@@ -1610,8 +1856,17 @@ export function useCanvasEngine(
           newSet.add(r.id)
         }
       }
+      for (const g of gridGroups) {
+        const gcx = g.x + g.width / 2
+        const gcy = g.y + g.height / 2
+        if (gcx >= mx && gcx <= mx + mw && gcy >= my && gcy <= my + mh) {
+          newGridSet.add(g.id)
+        }
+      }
       selectedRegionIds.value = newSet
-      if (newSet.size > 0) selectedRegionId.value = [...newSet][0]
+      selectedGridGroupIds.value = newGridSet
+      selectedRegionId.value = newSet.size > 0 ? [...newSet][0] : null
+      selectedGridGroupId.value = newGridSet.size > 0 ? [...newGridSet][0] : null
       markDirty()
       return
     }
@@ -1660,8 +1915,16 @@ export function useCanvasEngine(
       const dpr = window.devicePixelRatio || 1
       const sx = (_e.clientX - rect.left) * dpr
       const sy = (_e.clientY - rect.top) * dpr
-      const hit = hitTestRegion(sx, sy)
-      if (hit) {
+      const hitGrid = hitTestGridGroup(sx, sy)
+      const hit = hitGrid ? null : hitTestRegion(sx, sy)
+      if (hitGrid) {
+        const newSet = new Set(selectedGridGroupIds.value)
+        if (newSet.has(hitGrid.id)) { newSet.delete(hitGrid.id) } else { newSet.add(hitGrid.id) }
+        selectedGridGroupIds.value = newSet
+        selectedGridGroupId.value = hitGrid.id
+        selectedTextId.value = null
+        markDirty()
+      } else if (hit) {
         const newSet = new Set(selectedRegionIds.value)
         if (newSet.has(hit.id)) { newSet.delete(hit.id) } else { newSet.add(hit.id) }
         selectedRegionIds.value = newSet
@@ -2114,6 +2377,15 @@ export function useCanvasEngine(
       const rh = r.height * view.scale
       addShapeToPath(ctx, r.shape, rcx, rcy, rw, rh, screenPoints(r), r.borderRadius != null ? r.borderRadius * view.scale : undefined)
     }
+    for (const group of gridGroups) {
+      for (const cell of expandGridGroup(group)) {
+        const rcx = (cell.x + cell.width / 2 - view.offsetX) * view.scale
+        const rcy = (cell.y + cell.height / 2 - view.offsetY) * view.scale
+        const rw = cell.width * view.scale
+        const rh = cell.height * view.scale
+        addShapeToPath(ctx, cell.shape, rcx, rcy, rw, rh, undefined, cell.borderRadius != null ? cell.borderRadius * view.scale : undefined)
+      }
+    }
     ctx.fillStyle = 'rgba(0,0,0,0.35)'
     ctx.fill('evenodd')
     ctx.restore()
@@ -2165,6 +2437,62 @@ export function useCanvasEngine(
         }
       }
     } // end region overlays loop
+
+    for (const group of gridGroups) {
+      const isSelected = group.id === selectedGridGroupId.value
+      const isMultiSelected = !isSelected && selectedGridGroupIds.value.has(group.id)
+      const primary = isSelected || isMultiSelected
+      const gx = (group.x - view.offsetX) * view.scale
+      const gy = (group.y - view.offsetY) * view.scale
+      const gw = group.width * view.scale
+      const gh = group.height * view.scale
+      const cells = expandGridGroup(group)
+
+      ctx.save()
+      ctx.strokeStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : 'rgba(255,255,255,0.7)'
+      ctx.lineWidth = isSelected ? 2.4 : isMultiSelected ? 1.9 : 1.5
+      ctx.shadowColor = 'rgba(0,0,0,0.3)'
+      ctx.shadowBlur = primary ? 8 : 5
+      for (const cell of cells) {
+        const rcx = (cell.x + cell.width / 2 - view.offsetX) * view.scale
+        const rcy = (cell.y + cell.height / 2 - view.offsetY) * view.scale
+        const rw = cell.width * view.scale
+        const rh = cell.height * view.scale
+        drawShapePath(ctx, cell.shape, rcx, rcy, rw, rh, undefined, cell.borderRadius != null ? cell.borderRadius * view.scale : undefined)
+        ctx.stroke()
+      }
+      ctx.restore()
+
+      ctx.save()
+      ctx.strokeStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : 'rgba(255,255,255,0.7)'
+      ctx.lineWidth = isSelected ? 2.6 : isMultiSelected ? 2 : 1.8
+      ctx.setLineDash(primary ? [] : [7, 4])
+      ctx.strokeRect(gx, gy, gw, gh)
+      ctx.setLineDash([])
+      ctx.fillStyle = isSelected ? 'rgba(79,195,247,0.11)' : isMultiSelected ? 'rgba(111,200,247,0.08)' : 'rgba(255,255,255,0.06)'
+      ctx.fillRect(gx, gy, gw, gh)
+      ctx.restore()
+
+      ctx.fillStyle = isSelected ? '#4fc3f7' : isMultiSelected ? '#6fc8f7' : '#ddd'
+      ctx.font = '11px sans-serif'
+      ctx.textAlign = 'left'
+      ctx.fillText(
+        `${group.name} (${group.rows}x${group.cols})`,
+        gx,
+        Math.max(gy - 6, 14),
+      )
+
+      if (isSelected) {
+        const pts = getControlPoints(group.x, group.y, group.width, group.height, view)
+        for (const pt of pts) {
+          ctx.fillStyle = '#4fc3f7'
+          ctx.strokeStyle = '#fff'
+          ctx.lineWidth = 1.5
+          ctx.fillRect(pt.sx - CP_HALF, pt.sy - CP_HALF, CP_HALF * 2, CP_HALF * 2)
+          ctx.strokeRect(pt.sx - CP_HALF, pt.sy - CP_HALF, CP_HALF * 2, CP_HALF * 2)
+        }
+      }
+    }
 
     // draw text annotations (on top of overlay)
     for (const t of textAnnotations) {
@@ -2358,7 +2686,7 @@ export function useCanvasEngine(
 
   // --- watchers ---
 
-  watch([selectedRegionId, activeTool], () => {
+  watch([selectedRegionId, selectedGridGroupId, activeTool], () => {
     if (activeTool.value !== 'text') cleanupEmptyText()
     if (activeTool.value !== 'custom') customPoints.value = []
     if (activeTool.value !== 'brush' && activeTool.value !== 'eraser') {
@@ -2394,8 +2722,10 @@ export function useCanvasEngine(
     { deep: true },
   )
   watch(layers, () => markDirty(), { deep: true })
+  watch(() => gridGroups, () => markDirty(), { deep: true })
   watch(activeLayerId, () => markDirty())
   watch(selectedLayerIds, () => markDirty(), { deep: true })
+  watch(selectedGridGroupIds, () => markDirty(), { deep: true })
   watch(canvasVersion, () => markDirty())
 
   // --- init ---
@@ -2501,10 +2831,10 @@ export function useCanvasEngine(
   return {
     view, isDrawing, loadImage, fitToCanvas,
     fitAllLayersToViewport, centerActiveLayer, resetZoomTo100,
-    selectRegion, selectText, getSelectedRegion, getSelectedText,
+    selectRegion, selectGridGroup, selectText, getSelectedRegion, getSelectedGridGroup, getSelectedText,
     initCanvas, destroy, scheduleRender,
     copySelectedRegion, pasteRegion,
-    canCopy: () => !!getSelectedRegion(),
+    canCopy: () => !!getSelectedRegion() || !!getSelectedGridGroup() || selectedRegionIds.value.size > 0 || selectedGridGroupIds.value.size > 0,
     canPaste: () => clipboard.value.length > 0 && !!getActiveImage(),
     getWorkingCanvas,
     cancelCustomPolygon,

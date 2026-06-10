@@ -25,6 +25,7 @@ const customSizeWidth = ref<number | null>(null)
 const customSizeHeight = ref<number | null>(null)
 const customSizeNameInput = ref<HTMLInputElement | null>(null)
 const quickSizePopoverOpen = ref(false)
+const quickSizeMenuOpen = ref(false)
 const quickSizeFileInput = ref<HTMLInputElement | null>(null)
 const quickSizeMessage = ref('')
 
@@ -87,6 +88,7 @@ function handleAddCustomPreset() {
 
 function openQuickSizePopover() {
   quickSizePopoverOpen.value = true
+  quickSizeMenuOpen.value = false
   quickSizeMessage.value = ''
   nextTick(() => customSizeNameInput.value?.focus())
 }
@@ -118,9 +120,11 @@ function exportQuickSizeConfig() {
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
+  quickSizeMenuOpen.value = false
 }
 
 function triggerQuickSizeImport() {
+  quickSizeMenuOpen.value = false
   quickSizeFileInput.value?.click()
 }
 
@@ -211,8 +215,38 @@ function handleGuidSlice() {
     <div class="section-title">批量切图</div>
 
     <details class="batch-detail" open>
-      <summary class="batch-summary">快捷尺寸
-        <span v-if="!editor.activeLayer" class="summary-hint">（需活动图层）</span>
+      <summary class="batch-summary quick-size-summary">
+        <span class="summary-main">
+          快捷尺寸
+          <span v-if="!editor.activeLayer" class="summary-hint">（需活动图层）</span>
+        </span>
+        <span class="quick-size-title-actions" @click.stop>
+          <button
+            class="quick-size-menu-btn"
+            type="button"
+            title="快捷尺寸配置"
+            aria-label="快捷尺寸配置"
+            :aria-expanded="quickSizeMenuOpen"
+            @click.prevent.stop="quickSizeMenuOpen = !quickSizeMenuOpen"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.6" />
+              <circle cx="12" cy="12" r="1.6" />
+              <circle cx="19" cy="12" r="1.6" />
+            </svg>
+          </button>
+          <div v-if="quickSizeMenuOpen" class="quick-size-menu" @click.stop>
+            <button type="button" class="quick-size-menu-item" @click="triggerQuickSizeImport">导入配置</button>
+            <button
+              type="button"
+              class="quick-size-menu-item"
+              :disabled="customPresets.length === 0"
+              @click="exportQuickSizeConfig"
+            >
+              导出配置
+            </button>
+          </div>
+        </span>
       </summary>
       <div class="preset-grid">
         <div
@@ -249,7 +283,10 @@ function handleGuidSlice() {
             :aria-expanded="quickSizePopoverOpen"
             @click="openQuickSizePopover"
           >
-            <span class="add-preset-plus">+</span>
+            <svg class="add-preset-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
           </button>
           <form
             v-if="quickSizePopoverOpen"
@@ -279,16 +316,12 @@ function handleGuidSlice() {
           </form>
         </div>
       </div>
-      <div class="quick-size-config-row">
-        <button class="btn-ghost" :disabled="customPresets.length === 0" @click="exportQuickSizeConfig">导出配置</button>
-        <button class="btn-ghost" @click="triggerQuickSizeImport">导入配置</button>
-        <input ref="quickSizeFileInput" type="file" accept=".json,.localcut-config.json,application/json" hidden @change="handleQuickSizeImport" />
-      </div>
+      <input ref="quickSizeFileInput" type="file" accept=".json,.localcut-config.json,application/json" hidden @change="handleQuickSizeImport" />
       <div v-if="quickSizeMessage && !quickSizePopoverOpen" class="quick-size-message">{{ quickSizeMessage }}</div>
     </details>
 
     <!-- Grid generation -->
-    <details class="batch-detail" open>
+    <details class="batch-detail">
       <summary class="batch-summary">网格生成</summary>
       <div class="batch-body">
         <div class="field-row">
@@ -412,7 +445,79 @@ function handleGuidSlice() {
   cursor: pointer; padding: 4px 0; user-select: none;
 }
 .batch-summary:hover { color: var(--text-primary); }
+.quick-size-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  position: relative;
+}
+.summary-main {
+  min-width: 0;
+}
 .summary-hint { font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.quick-size-title-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.quick-size-menu-btn {
+  width: 24px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+}
+.quick-size-menu-btn:hover,
+.quick-size-menu-btn[aria-expanded="true"] {
+  border-color: rgba(40, 199, 111, 0.4);
+  background: rgba(40, 199, 111, 0.08);
+  color: var(--accent);
+}
+.quick-size-menu-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.quick-size-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+.quick-size-menu-item {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+}
+.quick-size-menu-item:hover:not(:disabled) {
+  background: rgba(40, 199, 111, 0.08);
+  color: var(--text-primary);
+}
+.quick-size-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .batch-body { padding: 8px 0 0 0; }
 .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding-top: 8px; }
 .preset-item { position: relative; min-width: 0; }
@@ -452,10 +557,14 @@ function handleGuidSlice() {
   background: rgba(40, 199, 111, 0.08);
   color: var(--text-primary);
 }
-.add-preset-plus {
-  font-size: 22px;
-  line-height: 1;
-  font-weight: 300;
+.add-preset-icon {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .quick-size-popover {
   position: absolute;
@@ -511,10 +620,6 @@ function handleGuidSlice() {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-top: 10px;
-}
-.quick-size-config-row {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px; margin-top: 6px;
 }
 .btn-ghost {
   min-height: 30px; padding: 6px 8px; background: var(--bg-primary);

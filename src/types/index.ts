@@ -24,6 +24,20 @@ export interface CropRegion {
   borderRadius?: number
 }
 
+export interface CropGridGroup {
+  id: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  rows: number
+  cols: number
+  gapX: number
+  gapY: number
+  borderRadius: number
+}
+
 export interface TextAnnotation {
   id: string
   text: string
@@ -161,6 +175,7 @@ export interface CropTemplate {
   lastUsedAt?: number
   baseRect: { x: number; y: number; width: number; height: number }
   regions: CropTemplateRegion[]
+  gridGroups?: CropTemplateGridGroup[]
   exportSettings?: CropTemplateExportSettings
 }
 
@@ -173,6 +188,19 @@ export interface CropTemplateRegion {
   heightRatio: number
   pointsRatio?: { x: number; y: number }[]
   borderRadiusRatio?: number
+}
+
+export interface CropTemplateGridGroup {
+  name: string
+  xRatio: number
+  yRatio: number
+  widthRatio: number
+  heightRatio: number
+  rows: number
+  cols: number
+  gapXRatio: number
+  gapYRatio: number
+  borderRadiusRatio: number
 }
 
 export interface CropTemplateExportSettings {

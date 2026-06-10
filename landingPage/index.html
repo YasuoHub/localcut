@@ -1,0 +1,1144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LocalCut Pro - 电商图片批量切图</title>
+  <meta name="description" content="LocalCut Pro 帮助电商运营批量生成裁切区域、统一导出尺寸、自动命名文件，并本地打包成可交付 ZIP。" />
+  <style>
+    :root {
+      --green: #005d3f;
+      --green-2: #08764f;
+      --green-3: #16b36d;
+      --ink: #14191b;
+      --muted: #5d6668;
+      --soft: #eef3f1;
+      --line: #dce4e1;
+      --paper: #ffffff;
+      --panel: #fbfcfc;
+      --shadow: 0 16px 45px rgba(19, 32, 28, 0.12);
+      --soft-shadow: 0 10px 24px rgba(16, 28, 25, 0.08);
+      --radius: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      width: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 18% 8%, rgba(0, 93, 63, 0.05), transparent 30%),
+        linear-gradient(180deg, #ffffff 0%, #fbfcfc 58%, #ffffff 100%);
+    }
+
+    .container {
+      width: min(1180px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      height: 72px;
+      background: rgba(255, 255, 255, 0.9);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 24px;
+      font-weight: 800;
+      color: #101515;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      color: var(--green);
+      flex: 0 0 auto;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 56px;
+      color: #202728;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    .nav-links a {
+      padding: 8px 0;
+    }
+
+    .nav-links a:hover {
+      color: var(--green);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 0 28px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      font-size: 16px;
+      font-weight: 750;
+      line-height: 1;
+      white-space: nowrap;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      color: #fff;
+      background: linear-gradient(180deg, #006a48, #004b34);
+      box-shadow: 0 10px 24px rgba(0, 83, 55, 0.22);
+    }
+
+    .btn-primary:hover {
+      box-shadow: 0 14px 30px rgba(0, 83, 55, 0.28);
+    }
+
+    .btn-outline {
+      color: var(--green);
+      background: #fff;
+      border-color: var(--green);
+      gap: 10px;
+    }
+
+    .btn-outline svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .hero {
+      padding: 54px 0 18px;
+      border-bottom: 1px solid #edf1ef;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(330px, 0.78fr) minmax(600px, 1.42fr);
+      gap: 42px;
+      align-items: center;
+    }
+
+    .hero-copy {
+      padding: 28px 0 20px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      max-width: 500px;
+      color: #111616;
+      font-size: clamp(38px, 4vw, 58px);
+      font-weight: 850;
+      line-height: 1.25;
+    }
+
+    .hero p {
+      margin: 24px 0 0;
+      max-width: 470px;
+      color: #40494b;
+      font-size: 20px;
+      line-height: 1.65;
+      font-weight: 430;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      margin-top: 44px;
+    }
+
+    .proof-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 25px;
+      margin-top: 48px;
+      color: #4c5658;
+      font-size: 14px;
+      font-weight: 560;
+    }
+
+    .proof-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .proof-item svg {
+      width: 19px;
+      height: 19px;
+      color: var(--green);
+      stroke-width: 1.7;
+    }
+
+    .hero-visual-wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 126px;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .product-frame {
+      position: relative;
+      border: 1px solid #cdd6d3;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #101513;
+      box-shadow: var(--shadow);
+    }
+
+    .product-frame::before {
+      content: "";
+      display: block;
+      height: 27px;
+      background: linear-gradient(180deg, #f5f7f7, #e8edeb);
+      border-bottom: 1px solid #ccd4d1;
+    }
+
+    .window-dots {
+      position: absolute;
+      top: 9px;
+      left: 13px;
+      display: flex;
+      gap: 6px;
+    }
+
+    .window-dots span {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #b8c2be;
+    }
+
+    .window-title {
+      position: absolute;
+      top: 6px;
+      left: 46px;
+      color: #1f2927;
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .product-shot {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1624 / 968;
+      object-fit: cover;
+      object-position: center;
+    }
+
+    .value-stack {
+      display: grid;
+      gap: 20px;
+    }
+
+    .value-card {
+      min-height: 110px;
+      padding: 20px 12px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--paper);
+      box-shadow: var(--soft-shadow);
+      color: #1e2727;
+    }
+
+    .value-card svg {
+      width: 34px;
+      height: 34px;
+      margin-bottom: 10px;
+      color: var(--green);
+      stroke-width: 1.75;
+    }
+
+    .value-card strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.3;
+    }
+
+    .value-card span {
+      display: block;
+      margin-top: 4px;
+      color: #3f494b;
+      font-size: 14px;
+      line-height: 1.35;
+    }
+
+    section {
+      position: relative;
+    }
+
+    .section-pad {
+      padding: 34px 0 18px;
+      border-bottom: 1px solid #edf1ef;
+    }
+
+    .section-title {
+      margin: 0 0 26px;
+      text-align: center;
+      font-size: clamp(28px, 3vw, 36px);
+      line-height: 1.25;
+      font-weight: 850;
+      color: #111616;
+    }
+
+    .pain-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 30px;
+      padding: 0 40px 4px;
+    }
+
+    .pain-card,
+    .feature-card,
+    .scenario-card,
+    .step-card {
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #fff;
+      box-shadow: var(--soft-shadow);
+    }
+
+    .pain-card {
+      min-height: 132px;
+      padding: 22px 16px 18px;
+      text-align: center;
+    }
+
+    .pain-card svg {
+      width: 45px;
+      height: 45px;
+      margin-bottom: 14px;
+      color: #161c1d;
+      stroke-width: 1.55;
+    }
+
+    .pain-card strong {
+      display: block;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .pain-card span {
+      display: block;
+      margin-top: 6px;
+      color: #6a7475;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 14px;
+    }
+
+    .feature-card {
+      min-height: 214px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .mini-ui {
+      min-height: 122px;
+      border-radius: 8px;
+      border: 1px solid #dce4e1;
+      background: linear-gradient(180deg, #fbfcfc, #f4f7f6);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .mini-ui.product {
+      background: #151917;
+    }
+
+    .mini-ui.product img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.92;
+    }
+
+    .mini-sidebar {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 22px;
+      background: #eef2f1;
+      border-right: 1px solid #d8e0dd;
+    }
+
+    .mini-canvas {
+      position: absolute;
+      inset: 12px 10px 12px 32px;
+      border-radius: 5px;
+      background:
+        linear-gradient(90deg, rgba(0, 93, 63, 0.08) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(0, 93, 63, 0.08) 1px, transparent 1px),
+        #f9fbfa;
+      background-size: 18px 18px;
+    }
+
+    .crop-rect {
+      position: absolute;
+      border: 2px solid var(--green-3);
+      background: rgba(22, 179, 109, 0.06);
+    }
+
+    .crop-rect.one { inset: 18px 56px 54px 14px; }
+    .crop-rect.two { inset: 54px 14px 18px 56px; }
+    .crop-rect.three { inset: 22px 18px 18px 18px; }
+
+    .mini-list {
+      position: absolute;
+      inset: 16px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .mini-list div {
+      height: 24px;
+      border-radius: 5px;
+      border: 1px solid #d9e2df;
+      background: #fff;
+      padding: 6px 8px;
+      color: #34403f;
+      font-size: 11px;
+    }
+
+    .mini-files {
+      position: absolute;
+      inset: 12px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+    }
+
+    .mini-file {
+      border-radius: 5px;
+      background:
+        linear-gradient(140deg, #efe9dc 0 48%, #d7e7d9 48% 100%);
+      border: 1px solid #d7dedb;
+    }
+
+    .mini-zip {
+      position: absolute;
+      right: 14px;
+      bottom: 13px;
+      width: 44px;
+      height: 36px;
+      border-radius: 7px;
+      border: 1px solid var(--green);
+      background: #fff;
+      display: grid;
+      place-items: center;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .mini-templates {
+      position: absolute;
+      inset: 14px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .template-row {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid #dce4e1;
+      border-radius: 7px;
+      background: #fff;
+      padding: 6px;
+    }
+
+    .template-thumb {
+      height: 30px;
+      border-radius: 4px;
+      background:
+        linear-gradient(90deg, #e8e1d6 0 50%, #dce9dc 50% 100%);
+    }
+
+    .template-line {
+      height: 7px;
+      border-radius: 999px;
+      background: #c8d4d1;
+    }
+
+    .feature-card h3 {
+      margin: 14px 0 4px;
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .feature-card p {
+      margin: 0;
+      color: #667173;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .delivery {
+      padding: 28px 0 38px;
+      background: linear-gradient(180deg, #ffffff 0%, #f9fbfa 100%);
+      border-bottom: 1px solid #edf1ef;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: 1fr 46px 1fr 46px 1fr 46px 1fr;
+      align-items: center;
+      gap: 8px;
+      width: min(980px, 100%);
+      margin: 0 auto;
+    }
+
+    .step-card {
+      min-height: 164px;
+      padding: 16px;
+      position: relative;
+    }
+
+    .step-badge {
+      position: absolute;
+      top: 14px;
+      left: 15px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--green);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .step-card h3 {
+      margin: 2px 0 15px 34px;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .drop-zone {
+      height: 88px;
+      border: 1px dashed #a9b7b3;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #75807f;
+      font-size: 12px;
+      background: #fbfcfc;
+    }
+
+    .arrow {
+      color: var(--green);
+      display: grid;
+      place-items: center;
+    }
+
+    .arrow svg {
+      width: 34px;
+      height: 34px;
+      stroke-width: 1.8;
+    }
+
+    .scenario-section {
+      padding: 34px 0 38px;
+      background: #fff;
+    }
+
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 44px;
+      width: min(1040px, 100%);
+      margin: 0 auto;
+    }
+
+    .scenario-card {
+      overflow: hidden;
+      text-align: center;
+    }
+
+    .scenario-image {
+      height: 118px;
+      border-bottom: 1px solid var(--line);
+      background: #efe9dc;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .scene-product::before {
+      content: "";
+      position: absolute;
+      width: 46px;
+      height: 82px;
+      left: 50%;
+      top: 24px;
+      transform: translateX(-50%);
+      border-radius: 9px 9px 5px 5px;
+      background: linear-gradient(180deg, #d7e5c2 0 18%, #91ad73 18% 100%);
+      box-shadow: 0 18px 0 #d8c3a0, 0 26px 28px rgba(70, 46, 18, 0.18);
+    }
+
+    .scene-long {
+      background: linear-gradient(120deg, #efe9dc, #f7f4ed);
+    }
+
+    .scene-long::before {
+      content: "";
+      position: absolute;
+      left: 78px;
+      top: 12px;
+      width: 56px;
+      height: 102px;
+      border-radius: 5px;
+      border: 1px solid #d8d1c6;
+      background:
+        linear-gradient(180deg, #e5efe3 0 28%, transparent 28% 32%, #e9ded0 32% 62%, transparent 62% 66%, #d9e6d7 66% 100%);
+      transform: rotate(-6deg);
+      box-shadow: 12px 10px 24px rgba(42, 31, 18, 0.12);
+    }
+
+    .scene-grid {
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.85), transparent),
+        #dfe9dc;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 4px;
+      padding: 8px;
+    }
+
+    .scene-grid span {
+      border-radius: 5px;
+      background: linear-gradient(140deg, #eee5d7, #cbdcc8);
+    }
+
+    .scene-social {
+      background: #e7d7c2;
+    }
+
+    .scene-social::before,
+    .scene-social::after {
+      content: "";
+      position: absolute;
+      top: 24px;
+      width: 76px;
+      height: 52px;
+      border-radius: 8px;
+      background: #244038;
+      box-shadow: 0 12px 24px rgba(36, 64, 56, 0.22);
+    }
+
+    .scene-social::before {
+      left: 36px;
+    }
+
+    .scene-social::after {
+      right: 28px;
+      background: #304b6a;
+      transform: rotate(3deg);
+    }
+
+    .scenario-card h3 {
+      margin: 17px 12px 5px;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+
+    .scenario-card p {
+      margin: 0 12px 18px;
+      color: #687274;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .bottom-cta {
+      color: #fff;
+      background:
+        radial-gradient(circle at 20% 25%, rgba(34, 195, 128, 0.22), transparent 36%),
+        linear-gradient(140deg, #00422e, #006246 48%, #003b2b);
+      padding: 36px 0 40px;
+      text-align: center;
+    }
+
+    .bottom-cta h2 {
+      margin: 0;
+      font-size: clamp(32px, 4vw, 46px);
+      line-height: 1.2;
+      font-weight: 850;
+    }
+
+    .bottom-cta p {
+      margin: 12px 0 20px;
+      color: rgba(255, 255, 255, 0.86);
+      font-size: 20px;
+    }
+
+    .bottom-cta .btn {
+      min-width: 280px;
+      color: var(--green);
+      background: #fff;
+      gap: 8px;
+      box-shadow: 0 14px 26px rgba(0, 0, 0, 0.18);
+    }
+
+    .bottom-cta svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    @media (max-width: 1100px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-copy {
+        text-align: center;
+      }
+
+      .hero h1,
+      .hero p {
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .hero-actions,
+      .proof-row {
+        justify-content: center;
+      }
+
+      .pain-grid,
+      .feature-grid {
+        grid-template-columns: repeat(2, 1fr);
+        padding-inline: 0;
+      }
+
+      .scenario-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 24px;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .container {
+        width: min(100% - 28px, 1180px);
+      }
+
+      .site-header {
+        height: auto;
+        position: relative;
+      }
+
+      .nav {
+        min-height: 64px;
+        flex-wrap: wrap;
+        padding: 10px 0;
+      }
+
+      .brand {
+        font-size: 20px;
+      }
+
+      .nav-links {
+        order: 3;
+        width: 100%;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 13px;
+      }
+
+      .nav .btn {
+        min-height: 40px;
+        padding: 0 15px;
+        font-size: 13px;
+      }
+
+      .hero {
+        padding-top: 32px;
+      }
+
+      .hero h1 {
+        font-size: 38px;
+      }
+
+      .hero p {
+        font-size: 17px;
+      }
+
+      .hero-actions .btn {
+        width: 100%;
+      }
+
+      .proof-row {
+        gap: 14px;
+      }
+
+      .hero-visual-wrap {
+        grid-template-columns: 1fr;
+      }
+
+      .value-stack {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+      }
+
+      .value-card {
+        min-height: 94px;
+      }
+
+      .section-pad,
+      .delivery,
+      .scenario-section {
+        padding-top: 30px;
+      }
+
+      .section-title {
+        font-size: 28px;
+      }
+
+      .pain-grid,
+      .feature-grid,
+      .scenario-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .steps {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="site-header">
+      <nav class="container nav" aria-label="主导航">
+        <a class="brand" href="#top" aria-label="LocalCut Pro 首页">
+          <svg class="brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <path d="M32 5 55 18v28L32 59 9 46V18L32 5Z" fill="currentColor"/>
+            <path d="M32 13 47 21.5v18.8L32 49 17 40.3V21.5L32 13Z" fill="#fff"/>
+            <path d="M32 13v15.2L17 21.5 32 13ZM47 21.5 32 28.2V13l15 8.5ZM32 49V33.8l15 6.5L32 49ZM17 40.3l15-6.5V49l-15-8.7Z" fill="currentColor"/>
+          </svg>
+          <span>LocalCut Pro</span>
+        </a>
+        <div class="nav-links">
+          <a href="#features">功能</a>
+          <a href="#scenes">场景</a>
+          <a href="#templates">模板</a>
+          <a href="#download">下载</a>
+        </div>
+        <a class="btn btn-primary" href="#download">下载试用</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <h1>电商图片批量切图，不再一张张裁</h1>
+            <p>快速生成裁切区域，统一导出尺寸，自动命名文件，本地打包成可交付 ZIP。</p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="#download">立即下载试用</a>
+              <a class="btn btn-outline" href="#features">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M10 8.8 15 12l-5 3.2V8.8Z" fill="currentColor"/>
+                </svg>
+                查看功能演示
+              </a>
+            </div>
+            <div class="proof-row" aria-label="核心优势">
+              <span class="proof-item">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M7 10V8a5 5 0 0 1 10 0v2" stroke="currentColor"/><path d="M5 10h14v10H5V10Z" stroke="currentColor"/><path d="M12 14v3" stroke="currentColor"/></svg>
+                本地运行更安心
+              </span>
+              <span class="proof-item">
+                <svg viewBox="0 0 24 24" fill="none"><path d="m13 2-8 12h7l-1 8 8-12h-7l1-8Z" stroke="currentColor"/></svg>
+                批量处理更高效
+              </span>
+              <span class="proof-item">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M12 3 20 7v5c0 5-3.4 8-8 9-4.6-1-8-4-8-9V7l8-4Z" stroke="currentColor"/><path d="m8.5 12.5 2.2 2.2 4.8-5" stroke="currentColor"/></svg>
+                私有数据不上云
+              </span>
+            </div>
+          </div>
+
+          <div class="hero-visual-wrap" aria-label="产品界面预览">
+            <div class="product-frame">
+              <div class="window-dots"><span></span><span></span><span></span></div>
+              <div class="window-title">LocalCut Pro</div>
+              <img class="product-shot" src="assets/localcut-pro-app.png" alt="LocalCut Pro 批量切图界面，商品图上有多个绿色裁切区域" />
+            </div>
+            <div class="value-stack">
+              <div class="value-card">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M6 3v15h15" stroke="currentColor"/><path d="M9 6h9v9H9z" stroke="currentColor"/><path d="M3 9h5" stroke="currentColor"/><path d="M15 16v5" stroke="currentColor"/></svg>
+                <strong>统一尺寸</strong>
+                <span>800 x 800</span>
+              </div>
+              <div class="value-card">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M6 4h12v16H6z" stroke="currentColor"/><path d="M9 16 12 7l3 9" stroke="currentColor"/><path d="M10 13h4" stroke="currentColor"/></svg>
+                <strong>自动命名</strong>
+                <span>product_001.png</span>
+              </div>
+              <div class="value-card">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7z" stroke="currentColor"/><path d="M14 3v5h5" stroke="currentColor"/><path d="M9 16h6" stroke="currentColor"/><path d="M9 12h5" stroke="currentColor"/></svg>
+                <strong>ZIP</strong>
+                <span>批量导出</span>
+              </div>
+              <div class="value-card">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16v10H4z" stroke="currentColor"/><path d="M8 20h8" stroke="currentColor"/><path d="M12 16v4" stroke="currentColor"/><path d="M16 9l-4 4-2-2" stroke="currentColor"/></svg>
+                <strong>本地处理</strong>
+                <span>更安心</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-pad">
+        <div class="container">
+          <h2 class="section-title">重复切图，最浪费运营时间</h2>
+          <div class="pain-grid">
+            <article class="pain-card">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" stroke="currentColor"/></svg>
+              <strong>一张图要裁很多块</strong>
+              <span>操作繁琐，效率低</span>
+            </article>
+            <article class="pain-card">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M8 3h8v18H8z" stroke="currentColor"/><path d="M10 7h4M10 11h4M10 15h4" stroke="currentColor"/></svg>
+              <strong>详情页长图切片麻烦</strong>
+              <span>手动切片，耗时费力</span>
+            </article>
+            <article class="pain-card">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10-4-4L4 16v4Z" stroke="currentColor"/><path d="m13 7 4 4" stroke="currentColor"/></svg>
+              <strong>手动改名容易错</strong>
+              <span>文件多了更难管理</span>
+            </article>
+            <article class="pain-card">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 17 17 4" stroke="currentColor"/><path d="M8 4h12v12" stroke="currentColor"/><path d="M4 8v12h12" stroke="currentColor"/></svg>
+              <strong>导出尺寸不统一</strong>
+              <span>反复调整，返工多</span>
+            </article>
+            <article class="pain-card">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M7 18a4 4 0 0 1 .6-7.95A6 6 0 0 1 19 12a3 3 0 0 1-1 5.83" stroke="currentColor"/><path d="M8 18h10" stroke="currentColor"/></svg>
+              <strong>商品素材不想上传第三方</strong>
+              <span>担心隐私与安全</span>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section-pad">
+        <div class="container">
+          <h2 class="section-title">把切图交付流程做成一条线</h2>
+          <div class="feature-grid">
+            <article class="feature-card">
+              <div class="mini-ui product">
+                <img src="assets/localcut-pro-app.png" alt="" />
+              </div>
+              <h3>1. 批量生成裁切区域</h3>
+              <p>网格生成、等距复制、长图切片</p>
+            </article>
+            <article class="feature-card">
+              <div class="mini-ui">
+                <div class="mini-list">
+                  <div>快捷尺寸</div>
+                  <div>800 x 800</div>
+                  <div>1080 x 1080</div>
+                  <div>750 x 1000</div>
+                </div>
+              </div>
+              <h3>2. 统一尺寸导出</h3>
+              <p>800x800、1080x1080、750x1000</p>
+            </article>
+            <article class="feature-card">
+              <div class="mini-ui">
+                <div class="mini-list">
+                  <div>文件命名</div>
+                  <div>{imageName}_{regionName}_{index:3}</div>
+                  <div>product_001_head_001.png</div>
+                  <div>product_001_body_002.png</div>
+                </div>
+              </div>
+              <h3>3. 自动文件命名</h3>
+              <p>{imageName}_{regionName}_{index:3}</p>
+            </article>
+            <article id="templates" class="feature-card">
+              <div class="mini-ui">
+                <div class="mini-templates">
+                  <div class="template-row"><span class="template-thumb"></span><span class="template-line"></span></div>
+                  <div class="template-row"><span class="template-thumb"></span><span class="template-line"></span></div>
+                  <div class="template-row"><span class="template-thumb"></span><span class="template-line"></span></div>
+                </div>
+              </div>
+              <h3>4. 模板保存复用</h3>
+              <p>同版式图片下次直接套用</p>
+            </article>
+            <article class="feature-card">
+              <div class="mini-ui">
+                <div class="mini-files">
+                  <span class="mini-file"></span><span class="mini-file"></span><span class="mini-file"></span>
+                  <span class="mini-file"></span><span class="mini-file"></span><span class="mini-file"></span>
+                </div>
+                <div class="mini-zip">ZIP</div>
+              </div>
+              <h3>5. 本地预览打包</h3>
+              <p>批量预览后导出 ZIP</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="delivery">
+        <div class="container">
+          <h2 class="section-title">4 步完成交付</h2>
+          <div class="steps">
+            <article class="step-card">
+              <span class="step-badge">1</span>
+              <h3>导入图片</h3>
+              <div class="drop-zone">拖拽图片到此处<br />或点击导入</div>
+            </article>
+            <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h15" stroke="currentColor"/><path d="m13 6 6 6-6 6" stroke="currentColor"/></svg></div>
+            <article class="step-card">
+              <span class="step-badge">2</span>
+              <h3>生成 / 套用裁切区域</h3>
+              <div class="mini-ui">
+                <div class="mini-canvas">
+                  <span class="crop-rect one"></span>
+                  <span class="crop-rect two"></span>
+                </div>
+              </div>
+            </article>
+            <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h15" stroke="currentColor"/><path d="m13 6 6 6-6 6" stroke="currentColor"/></svg></div>
+            <article class="step-card">
+              <span class="step-badge">3</span>
+              <h3>设置尺寸和命名</h3>
+              <div class="mini-ui">
+                <div class="mini-list">
+                  <div>快捷尺寸 800 x 800</div>
+                  <div>宽度 800　高度 800</div>
+                  <div>{imageName}_{regionName}_{index:3}</div>
+                </div>
+              </div>
+            </article>
+            <div class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h15" stroke="currentColor"/><path d="m13 6 6 6-6 6" stroke="currentColor"/></svg></div>
+            <article class="step-card">
+              <span class="step-badge">4</span>
+              <h3>预览并导出 ZIP</h3>
+              <div class="mini-ui">
+                <div class="mini-files">
+                  <span class="mini-file"></span><span class="mini-file"></span><span class="mini-file"></span>
+                  <span class="mini-file"></span><span class="mini-file"></span><span class="mini-file"></span>
+                </div>
+                <div class="mini-zip">ZIP</div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="scenes" class="scenario-section">
+        <div class="container">
+          <h2 class="section-title">适合高频素材处理场景</h2>
+          <div class="scenario-grid">
+            <article class="scenario-card">
+              <div class="scenario-image scene-product"></div>
+              <h3>商品主图</h3>
+              <p>批量生成电商主图，统一尺寸</p>
+            </article>
+            <article class="scenario-card">
+              <div class="scenario-image scene-long"></div>
+              <h3>详情页长图</h3>
+              <p>长图自动切片，适配平台要求</p>
+            </article>
+            <article class="scenario-card">
+              <div class="scenario-image scene-grid">
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+              </div>
+              <h3>活动素材拼图</h3>
+              <p>多图批量裁切，快速出稿</p>
+            </article>
+            <article class="scenario-card">
+              <div class="scenario-image scene-social"></div>
+              <h3>小红书 / 社媒封面图</h3>
+              <p>多尺寸封面批量导出</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="download" class="bottom-cta">
+        <div class="container">
+          <h2>把重复切图工作交给 LocalCut Pro</h2>
+          <p>少一点手动裁切、改名和返工，多一点稳定交付。</p>
+          <a class="btn" href="javascript:void(0)">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3v12" stroke="currentColor" stroke-width="1.9"/>
+              <path d="m7 10 5 5 5-5" stroke="currentColor" stroke-width="1.9"/>
+              <path d="M5 20h14" stroke="currentColor" stroke-width="1.9"/>
+            </svg>
+            下载试用
+          </a>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

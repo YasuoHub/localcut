@@ -7,15 +7,18 @@ const editor = useEditorStore()
 
 const emit = defineEmits<{
   'upload-image': [files: File[]]
+  'open-compress': []
   'open-matting': []
+  'create-grid-group': []
 }>()
 
 type IconName =
-  | 'import' | 'matting' | 'select' | 'brush' | 'eraser' | 'wand' | 'shapes' | 'text'
-  | 'rect' | 'roundrect' | 'circle' | 'triangle' | 'diamond' | 'star' | 'heart' | 'polygon'
+  | 'import' | 'compress' | 'matting' | 'select' | 'brush' | 'eraser' | 'wand' | 'shapes' | 'text'
+  | 'grid' | 'rect' | 'roundrect' | 'circle' | 'triangle' | 'diamond' | 'star' | 'heart' | 'polygon'
 
 const iconPaths: Record<IconName, string[]> = {
   import: ['M12 3v12', 'M7 10l5 5 5-5', 'M5 19h14', 'M5 16v3', 'M19 16v3'],
+  compress: ['M4 6h16v12H4z', 'M8 10h8', 'M10 14h4', 'M7 3v3', 'M17 3v3', 'M7 18v3', 'M17 18v3'],
   matting: ['M4.5 7.5a2.5 2.5 0 1 0 0 .1', 'M4.5 16.5a2.5 2.5 0 1 0 0 .1', 'M7 8l12 8', 'M7 16l12-8'],
   select: ['M5 3l12 11-5.5 1.2L8.5 21 5 3z'],
   brush: ['M14 4l6 6-8.5 8.5H6v-5.5L14 4z', 'M14 4l2-2 6 6-2 2', 'M6 18c-1.2 0-2 .8-2 2h7'],
@@ -23,6 +26,7 @@ const iconPaths: Record<IconName, string[]> = {
   wand: ['M14 4l6 6-10 10-6-6L14 4z', 'M4 4l1.5 1.5', 'M20 20l-1.5-1.5', 'M21 4h-2', 'M5 21v-2'],
   shapes: ['M5 7h9v7H5z', 'M16 8l4 4-4 4', 'M8 18h8'],
   text: ['M5 5h14', 'M12 5v14', 'M9 19h6'],
+  grid: ['M5 5h14v14H5z', 'M5 9.7h14', 'M5 14.3h14', 'M9.7 5v14', 'M14.3 5v14'],
   rect: ['M5 7h14v10H5z'],
   roundrect: ['M8 7h8a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3v-4a3 3 0 0 1 3-3z'],
   circle: ['M12 6a6 6 0 1 0 0 12a6 6 0 0 0 0-12z'],
@@ -136,6 +140,13 @@ function handleFileChange(e: Event) {
       </button>
       <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple style="display:none" @change="handleFileChange" />
 
+      <button class="nav-btn compress-btn" title="图片压缩" @click="emit('open-compress')">
+        <svg class="tool-svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path v-for="path in iconPaths.compress" :key="path" :d="path" />
+        </svg>
+        <span class="tool-label">压缩</span>
+      </button>
+
       <button class="nav-btn matting-btn" title="智能抠图" @click="emit('open-matting')">
         <svg class="tool-svg" viewBox="0 0 24 24" aria-hidden="true">
           <path v-for="path in iconPaths.matting" :key="path" :d="path" />
@@ -230,6 +241,17 @@ function handleFileChange(e: Event) {
         </svg>
         <span class="tool-label">文字</span>
       </button>
+      <button
+        class="nav-btn"
+        :disabled="!editor.imageLoaded"
+        title="N宫格"
+        @click="emit('create-grid-group')"
+      >
+        <svg class="tool-svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path v-for="path in iconPaths.grid" :key="path" :d="path" />
+        </svg>
+        <span class="tool-label">N宫格</span>
+      </button>
     </section>
   </aside>
 </template>
@@ -319,6 +341,20 @@ function handleFileChange(e: Event) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
   border-color: rgba(255, 255, 255, 0.045);
+}
+
+.compress-btn {
+  color: var(--text-secondary);
+  background:
+    linear-gradient(180deg, rgba(74, 168, 255, 0.09), rgba(74, 168, 255, 0.025));
+  border-color: rgba(74, 168, 255, 0.16);
+}
+
+.compress-btn:hover:not(:disabled) {
+  color: #8fc6ff;
+  background:
+    linear-gradient(180deg, rgba(74, 168, 255, 0.14), rgba(74, 168, 255, 0.055));
+  border-color: rgba(74, 168, 255, 0.34);
 }
 
 .matting-btn:hover:not(:disabled) {

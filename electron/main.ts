@@ -36,6 +36,51 @@ function getResourcePath(...segments: string[]): string {
   return path.join(process.resourcesPath, ...segments)
 }
 
+function createLocalFileResponse(filePath: string, cacheControl = 'public, max-age=86400'): Response {
+  const data = fs.readFileSync(filePath)
+  const ext = path.extname(filePath).toLowerCase()
+  const mimeTypes: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
+    '.cjs': 'application/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.onnx': 'application/octet-stream',
+    '.wasm': 'application/wasm',
+  }
+
+  return new Response(data, {
+    status: 200,
+    headers: {
+      'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+      'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Cache-Control': cacheControl,
+    },
+  })
+}
+
+function getSafeProtocolPath(requestUrl: string): string | null {
+  const url = new URL(requestUrl)
+  const resourcePath = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+  const normalized = path.normalize(resourcePath)
+
+  if (!normalized || normalized.startsWith('..') || path.isAbsolute(normalized)) {
+    return null
+  }
+
+  return normalized
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
@@ -46,7 +91,9 @@ function createWindow() {
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       // .cjs 强制 CommonJS，因为 package.json "type": "module" 会影响 .js
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: isDev
+        ? path.join(__dirname, '..', 'electron', 'preload.cjs')
+        : path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       // sandbox: false 允许 preload 使用 ESM import（对桌面 App 风险可控，
@@ -72,8 +119,8 @@ function createWindow() {
     win.loadURL('http://localhost:5173')
     win.webContents.openDevTools({ mode: 'detach' })
   } else {
-    // 生产：加载 Vite 打包后的 index.html
-    win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+    // 生产：通过自定义协议加载，让 HTML/JS/Worker 都能带 COOP/COEP 头
+    win.loadURL('localcut-app://app/electron/index.html')
 
     // 生产环境禁止打开 DevTools
     win.webContents.on('devtools-opened', () => {
@@ -85,41 +132,50 @@ function createWindow() {
 }
 
 function setupProtocol() {
+  protocol.handle('localcut-app', (request) => {
+    const resourcePath = getSafeProtocolPath(request.url)
+    if (!resourcePath) {
+      return new Response('Not Found', { status: 404 })
+    }
+
+    try {
+      const filePath = path.join(__dirname, 'renderer', resourcePath)
+      return createLocalFileResponse(filePath, resourcePath.endsWith('.html') ? 'no-cache' : 'public, max-age=86400')
+    } catch {
+      return new Response('Not Found', { status: 404 })
+    }
+  })
+
   // 注册 localcut:// 自定义协议，用于加载模型和 WASM 文件
   protocol.handle('localcut', (request) => {
     const url = new URL(request.url)
+    const resourceType = url.hostname || url.pathname.split('/')[1]
+    const resourcePath = url.hostname
+      ? url.pathname.slice(1)
+      : url.pathname.split('/').slice(2).join('/')
+
+    if (!resourcePath || resourcePath.includes('..') || path.isAbsolute(resourcePath)) {
+      return new Response('Not Found', { status: 404 })
+    }
     // localcut://models/xxx.onnx → public/models/xxx.onnx 或 resources/models/xxx.onnx
     // localcut://wasm/xxx.wasm → node_modules/.../xxx.wasm 或 resources/wasm/xxx.wasm
 
     let filePath: string
-    if (url.pathname.startsWith('/models')) {
-      filePath = getResourcePath('public', url.pathname.slice(1))
-    } else if (url.pathname.startsWith('/wasm')) {
-      // WASM 文件在 node_modules/onnxruntime-web/dist/ 中
-      filePath = getResourcePath('node_modules', 'onnxruntime-web', 'dist', url.pathname.slice(6))
+    if (resourceType === 'models') {
+      filePath = isDev
+        ? getResourcePath('public', 'models', resourcePath)
+        : getResourcePath('models', resourcePath)
+    } else if (resourceType === 'wasm') {
+      // 开发环境从 node_modules 读取，生产环境从 extraResources/wasm 读取
+      filePath = isDev
+        ? getResourcePath('node_modules', 'onnxruntime-web', 'dist', resourcePath)
+        : getResourcePath('wasm', resourcePath)
     } else {
       return new Response('Not Found', { status: 404 })
     }
 
     try {
-      const data = fs.readFileSync(filePath)
-      const ext = path.extname(filePath).toLowerCase()
-      const mimeTypes: Record<string, string> = {
-        '.onnx': 'application/octet-stream',
-        '.wasm': 'application/wasm',
-        '.mjs': 'application/javascript',
-        '.cjs': 'application/javascript',
-        '.js': 'application/javascript',
-        '.json': 'application/json',
-      }
-      return new Response(data, {
-        status: 200,
-        headers: {
-          'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=86400',
-        },
-      })
+      return createLocalFileResponse(filePath)
     } catch {
       return new Response('Not Found', { status: 404 })
     }
@@ -230,8 +286,6 @@ function buildMenu() {
         { label: '放大', accelerator: 'CmdOrCtrl+=', role: 'zoomIn' as const },
         { label: '缩小', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' as const },
         { label: '重置缩放', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' as const },
-        { type: 'separator' },
-        { label: '开发者工具', accelerator: 'F12', role: 'toggleDevTools' as const },
       ],
     },
     {
@@ -309,11 +363,22 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist')
 // - supportFetchAPI: 让 fetch() 可以使用此协议
 protocol.registerSchemesAsPrivileged([
   {
+    scheme: 'localcut-app',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+  {
     scheme: 'localcut',
     privileges: {
       standard: true,
       secure: true,
       supportFetchAPI: true,
+      corsEnabled: true,
       stream: true,
     },
   },
